@@ -61,7 +61,8 @@ test('same authenticated MCP endpoint runs modern events and legacy tools, route
   }
   assert.equal((await rpc('server/discover')).result.capabilities.events instanceof Object, true);
   const catalog = (await rpc('tools/list')).result.tools;
-  assert.equal(catalog.length, 37);
+  assert.equal(catalog.length, 44);
+  for (const name of ['register_peer', 'list_peers', 'unregister_peer', 'send_peer_message', 'get_peer_message', 'list_peer_messages', 'ack_peer_message']) assert.ok(catalog.some(tool => tool.name === name));
   for (const name of ['export_direct_file', 'import_direct_file', 'get_direct_transfer']) {
     assert.ok(catalog.some(tool => tool.name === name));
   }

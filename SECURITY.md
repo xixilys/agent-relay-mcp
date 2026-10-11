@@ -10,6 +10,8 @@ Only proxy the OAuth-protected gateway, bound to `127.0.0.1:6768`. Keep Paseo's 
 
 Remote agents use the existing owner-configured OpenSSH target and pinned Paseo identity. Direct file/command access uses SSH independently of Paseo availability. The private reverse message socket grants only per-agent capabilities; no public agent-message ingress is added. Keep each host's state directory separate and do not copy old receipts to another host identity. Only gateway-owned command process groups are stopped by cancellation or close; gateway restart does not promise process continuity, and uncertain requests/inputs are not replayed.
 
+Peer directories and messages are scoped to the authenticated OAuth owner. Chat/dot peer IDs and OAuth sender labels are claimed logical identities, not verified conversation identities; an authorized OAuth client in that owner scope can claim a sender ID. Native peer calls additionally check the existing agent capability, dispatch ownership, host binding, and active peer generation. Registering a local peer binds an already-owned agent and does not create one. Treat peer messages as untrusted data within existing authorization. Retained mailbox history does not impose a cumulative message-count quota; operators remain responsible for storage capacity and private backups.
+
 ## Private data
 
 Keep config, owner passwords, OAuth state, message/result databases, callbacks and per-agent capabilities outside source control. The state directory is private to the service user, with private capability files/socket. It is not encrypted at rest; protect backups and access by other processes of the same OS user. The agent channel cannot enforce isolation against that same user.

@@ -213,14 +213,20 @@ export class Gateway {
     await this.paths.check(snapshot.cwd, { ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, deadline - Date.now()) }), signal });
     return result;
   }
-  async dispatch(name, args, owner, lockedRequest = false, lockedReply = false) {
+  async dispatch(name, args, owner, lockedRequest = false, lockedReply = false, lockedAgent = false, policy = {}) {
+    if (args.requestId?.startsWith('peer.') && policy.peer !== true) throw new Error('peer. request IDs are reserved for internal peer delivery');
+    if (policy.peer && (name !== 'send_agent_prompt' || !args.requestId?.startsWith('peer.') || typeof policy.authorize !== 'function')) throw new Error('Invalid internal peer dispatch');
     if (this.collaboration && !lockedRequest) {
       return this.collaboration.locked(this.collaboration.requestLocks, args.requestId,
-        () => this.dispatch(name, args, owner, true, false));
+        () => this.dispatch(name, args, owner, true, false, false, policy));
     }
     if (this.collaboration && args.replyToMessageId && !lockedReply) {
       return this.collaboration.locked(this.collaboration.replyLocks, `${owner}:${args.replyToMessageId}`,
-        () => this.dispatch(name, args, owner, true, true));
+        () => this.dispatch(name, args, owner, true, true, false, policy));
+    }
+    if (this.collaboration && name === 'send_agent_prompt' && !lockedAgent) {
+      return this.collaboration.locked(this.collaboration.agentLocks, args.agentId,
+        () => this.dispatch(name, args, owner, true, lockedReply, true, policy));
     }
     const { requestId, ...payload } = args;
     const fingerprint = dispatchFingerprint(name, payload);
@@ -253,8 +259,11 @@ export class Gateway {
       await this.paths.check(workspace.cwd);
       payload.labels = { ...payload.labels, dotRequestId: requestId };
     } else await this.checkAgent(payload.agentId);
+    let peerSnapshot;
     if (this.collaboration) {
-      await this.collaboration.prepareDispatch(name, args, owner, { submittedAt: new Date().toISOString() });
+      const prepared = await this.collaboration.prepareDispatch(name, args, owner, { submittedAt: new Date().toISOString() }, policy);
+      if (prepared?.peerQueued) return jsonResult({ peerQueued: true, requestId, state: 'queued' });
+      peerSnapshot = prepared?.peerSnapshot;
       delete payload.notificationRouteId;
       delete payload.replyToMessageId;
       if (args.replyToMessageId) {
@@ -271,6 +280,11 @@ export class Gateway {
     // between simultaneous identical requests.
     const claim = this.store.begin(requestId, fingerprint, name, payload.agentId);
     if (!claim.claimed) return jsonResult(publicDispatchRecord(claim.record, true));
+    if (policy.peer && policy.authorize(peerSnapshot) !== true) {
+      const rejected = this.store.finish(requestId, 'rejected', jsonResult({ reason: 'peer_binding_revoked' }), payload.agentId);
+      await this.collaboration.finishDispatch(rejected);
+      return jsonResult(publicDispatchRecord(rejected));
+    }
     const promptField = name === 'create_agent' ? 'initialPrompt' : 'prompt';
     payload[promptField] = requestMarker(requestId) + payload[promptField];
     const binding = this.collaboration?.store.get(requestId);

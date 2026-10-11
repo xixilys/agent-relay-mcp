@@ -12,7 +12,7 @@
   <img alt="Node.js 22.19–26" src="https://img.shields.io/badge/Node.js-22.19%E2%80%9326-2563eb.svg">
 </p>
 
-**One OAuth-protected MCP endpoint for Paseo agents and project-scoped Direct files and commands across your Mac and SSH-reachable Linux/WSL hosts.** Discover hosts, choose where work runs, and read its receipts and events from the same client connection.
+**One OAuth-protected MCP endpoint for Paseo agents, owner-scoped peer mailboxes, and project-scoped Direct files and commands across your Mac and SSH-reachable Linux/WSL hosts.** Discover hosts, choose where work runs, and read its receipts and events from the same client connection.
 
 This self-hosted gateway is for one trusted owner. Agents execute on their selected host with that host's Paseo installation and runtime permissions. The gateway does not provide model accounts, a hosted service, or an operating-system sandbox.
 
@@ -20,14 +20,15 @@ This self-hosted gateway is for one trusted owner. Agents execute on their selec
 
 ## What it does
 
-- **One endpoint, explicit host selection.** `list_hosts` reports each configured `hostId`, name, and availability. Tools accept `hostId`; when omitted, calls keep their legacy Mac behavior. Include `hostId` for remote calls and later event or receipt reads.
-- **Host-local work and history.** Projects, workspaces, agents, receipts, messages, and callbacks belong to one host. IDs are not guessed or looked up across machines.
+- **One endpoint, explicit host selection.** `list_hosts` reports each configured `hostId`, name, and availability. Host-routed tools accept `hostId`; when omitted, calls keep their legacy Mac behavior. Include it for remote calls and later event or receipt reads. Peer mailbox send/read/ACK calls use the owner-wide directory; local peer registration uses `hostId` to bind an agent.
+- **Host-local work and history.** Projects, workspaces, agents, task receipts, and host callbacks belong to one host. IDs are not guessed or looked up across machines. Peer identities and messages instead share one authenticated owner's directory across configured hosts.
+- **Mailboxes for chats, dot, and native agents.** Register stable peer IDs, discover recipients, and exchange messages with linked replies and ACKs. Chats check mail manually; busy native agents receive queued messages when idle. Retained history no longer blocks new mail at a cumulative message-count limit.
 - **Existing Paseo stays in charge.** The gateway connects to the Mac Paseo instance and configured SSH hosts. It does not inherit hosts from the Paseo desktop UI, install Paseo remotely, start its daemon, or change providers or credentials.
 - **Remote messages return to the Mac gateway.** A fixed CLI on the remote host reaches that host's dedicated Mac-side channel through a reverse SSH Unix-socket forward. The Mac gateway persists messages centrally; no public message endpoint is added.
 
 ## Quick start
 
-The example below is a shape guide for the 0.4.0 multi-host configuration. Replace every example path and host value with values you control. The Mac is implicit; list only additional remote hosts.
+The example below is a shape guide for the 0.6.0 multi-host configuration. Replace every example path and host value with values you control. The Mac is implicit; list only additional remote hosts.
 
 ```sh
 git clone https://github.com/xixilys/dot-gpt-local-agents-mcp.git
@@ -98,7 +99,7 @@ NODE
 
 ## Choose a host and follow a task
 
-Start with `list_hosts`. Use a returned `hostId` when selecting a remote host, and keep it with the host's `workspaceId`, `agentId`, `requestId`, and `routeId`. Mac calls may omit `hostId` for compatibility. Remote result reads, waits, message reads, and follow-ups should carry the same explicit `hostId` so the gateway never has to infer which machine owns an identifier.
+Start with `list_hosts`. Use a returned `hostId` when selecting a remote host, and keep it with that host's `workspaceId`, `agentId`, `requestId`, and `routeId`. Mac calls may omit `hostId` for compatibility. Host-routed result reads, waits, and follow-ups should carry the same explicit `hostId`. Peer mailbox send/read/ACK calls do not take it; local registration uses it to select the agent's host.
 
 The usual flow is to discover projects and provider capabilities on the chosen host, select or create a workspace there, then dispatch with a stable `requestId`. A receipt confirms submission, not task completion. If a result is `unknown` or still `submitting`, inspect the original request and that host's timeline; do not resend it under a new ID until you know whether it ran. Review the actual artifact before accepting the work.
 
@@ -156,6 +157,45 @@ An export link is a short-lived bearer capability for that one file: anyone who 
 The legacy tools transport and the `2026-07-28` MCP Events adapter share `/mcp`. For an Events-capable client, subscribe to `agent.attention` with explicit `hostId`, `workspaceId`, and a stable `routeId` unique to that chat, plus its HTTPS callback and signing secret. Confirm the route with `list_notification_routes`, then bind it to dispatches. Existing requests can be watched with their original request ID and an explicit route; this does not create an agent, send a prompt, or rebind another route. A subscription, route binding, `notifyOnFinish`, or successful callback delivery report does not prove that a client woke up or that its task succeeded. Without Events support, read or wait for results directly.
 
 For remote tasks, the fixed message CLI runs on the remote host and reaches that host's dedicated channel on the Mac gateway through a reverse SSH Unix-socket forward. The Mac gateway centrally persists these messages; this does not create a public inbound message service. Keep each host's receipts, routes, and callback state distinct. When a host is unavailable, its data cannot be recovered by silently falling back to Mac; an uncertain request must be inspected on its original host rather than resubmitted elsewhere.
+
+### Owner-scoped peer mailboxes (0.6.0)
+
+Peers are logical identities in one authenticated owner's directory shared across configured hosts. A chat or dot client registers a stable `peerId` once, then checks its mailbox manually; sending a message does not wake or automatically prompt a chat. The OAuth owner scopes the directory, but a peer ID and sender label are still claimed identity, not proof that a message came from a particular conversation. Treat message text as peer-authored data, never as new user authorization. The directory retains stopped identities and accepts up to 512 cumulative peer IDs per owner.
+
+```json
+{"peerId":"chat-main","kind":"chat","displayName":"Main chat"}
+{"peerId":"dot","kind":"dot","displayName":"Coordinator"}
+```
+
+Each participant calls `register_peer` with its own `peerId` and `kind` (`chat`, `dot`, or `local`); the two objects above are separate registration calls. `displayName` is optional. For a `local` peer, also pass `hostId` and `agentId`. This only binds an agent that the same owner already has submitted on that host; registration does not create or start an agent. A native agent can use the fixed `peer-agent` CLI with its existing capability and Unix socket to call the peer tools. The CLI is a narrow local transport for those tools, not a full MCP transport, and it does not contain an OAuth key.
+
+Use these seven tools with their exact arguments:
+
+| Tool | Required arguments | Optional arguments |
+| --- | --- | --- |
+| `register_peer` | `peerId`, `kind` | `displayName`; `hostId` and `agentId` are required for `kind: "local"` and omitted otherwise |
+| `list_peers` | — | `peerId` (filter to one identity) |
+| `unregister_peer` | `peerId` | — |
+| `send_peer_message` | `messageId`, `fromPeerId`, `toPeerId`, `text` | `inReplyTo` |
+| `get_peer_message` | `messageId` | — |
+| `list_peer_messages` | `peerId` | `includeProcessed` (default `false`), `limit` (1–100; default 50) |
+| `ack_peer_message` | `messageId`, `peerId` | — |
+
+Every new message needs a caller-generated UUID as `messageId`. Message text must contain 1–8,192 characters. Check the recipient's inbox with `list_peer_messages`; by default it returns received, unprocessed messages only. Each entry contains compact metadata, a `summary` of at most the first 200 text characters, and `textLength`; it omits the full text and delivery details so a long message cannot overwhelm the native CLI response. Use `get_peer_message` with that entry's exact `messageId` to read the full text when needed. Set `includeProcessed: true` to inspect processed history. Listing or reading leaves processing state unchanged. Once the recipient has handled a message, it can call `ack_peer_message` with that message's ID and its own `peerId`. ACK marks that exact message processed; it does not send a reply, event, wake, or prove task success.
+
+```json
+{"messageId":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a","fromPeerId":"chat-main","toPeerId":"dot","text":"Please review the draft."}
+{"peerId":"dot"}
+{"messageId":"a0ebd6ce-e25f-4e14-88de-12e2c6cf6277","fromPeerId":"dot","toPeerId":"chat-main","text":"I reviewed it; see the notes.","inReplyTo":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a"}
+```
+
+A reply reverses the original sender and recipient and sets `inReplyTo` to the original message UUID. Each message can have at most one reply, and a conversation is limited to eight hops. If a send outcome is uncertain, call `get_peer_message` with the exact original `messageId`; an unknown result is not a reason to resend with a new ID.
+
+For local agents, busy delivery is queued and submitted when the agent becomes idle. The fixed `peer-agent` CLI has a 15-second default network timeout. A native registration and inbox are limited to that owner and the agent's current peer generation. Check for mail when a task starts, at stage completion, and when the agent becomes idle. Do not create automatic acknowledgements or reply loops; act only within the authority already granted to that agent.
+
+Callbacks are an explicit optional delivery path for WorkCloud/dot clients that support Events. Bind a peer to an Events subscription deliberately; ordinary chat clients are not guaranteed to support Events or to wake on a callback. Even a successful delivery receipt only records delivery at that layer, not that a chat read or acted on the message. Mailbox polling remains the manual default.
+
+In 0.6.0, validation covered registration, A-to-B delivery, B's linked reply, and both peers reading and ACKing between two new ChatGPT peers, queued delivery to a busy Mac native agent when it became idle, and a ChatGPT → WSL native agent → ChatGPT reply/ACK flow. The cumulative 1,024-message history rejection was removed: existing history and duplicate protection remain, and sending, reading, ACKing, and retrying the original ID were exercised with a real 1,025th message. These checks cover the listed workflows; they do not qualify every host/client setup or deployment configuration.
 
 Callbacks require HTTPS, verified challenges, public DNS/IP destinations, and Standard Webhooks signatures. Delivery checks resolved addresses, rejects redirects and private/local destinations, and uses a durable outbox with up to five attempts for transient errors; delivery stops on HTTP 410. Subscriptions last one day by default (`ttlMs: null` selects seven days); refresh them before expiry. Cursor replay is not implemented (`cursor: null`); recover exact results through read tools. Unsubscribe when monitoring ends, preserving unrelated routes.
 

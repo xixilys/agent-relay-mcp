@@ -50,7 +50,28 @@ async function remoteOperation() {
   }
   const marker = path.join(dir, '.bridge-owner.json');
   if (created) await fs.writeFile(marker, JSON.stringify({ version: 1, identity, files: {} }), { flag: 'wx', mode: 0o600 });
-  const ownerRecord = await readPrivate(marker, 8192);
+  let ownerRecord;
+  try { ownerRecord = await readPrivate(marker, 8192); }
+  catch (error) {
+    if (error.code !== 'ENOENT' || input.op !== 'install') throw error;
+    // Direct may have initialized this same configured gateway root first.
+    // Adopt only an empty private root or the exact known Direct layout; never
+    // turn an arbitrary owner directory into a managed helper installation.
+    const entries = await fs.readdir(dir);
+    const rootInfo = await fs.lstat(dir);
+    if (!rootInfo.isDirectory() || rootInfo.uid !== uid || (rootInfo.mode & 0o777) !== 0o700) throw Error();
+    if (entries.length === 1 && entries[0] === 'direct') {
+      const direct = path.join(dir, 'direct'), directInfo = await fs.lstat(direct);
+      if (!directInfo.isDirectory() || directInfo.uid !== uid || (directInfo.mode & 0o777) !== 0o700) throw Error();
+      const record = JSON.parse((await readPrivate(path.join(direct, '.direct-owner.json'), 1024)).data);
+      if (!record || typeof record !== 'object' || Array.isArray(record) ||
+          Object.keys(record).sort().join(',') !== 'hostId,uid' ||
+          typeof input.hostId !== 'string' || input.hostId.length === 0 ||
+          record.hostId !== input.hostId || record.uid !== uid) throw Error();
+    } else if (entries.length !== 0) throw Error();
+    await fs.writeFile(marker, JSON.stringify({ version: 1, identity, files: {} }), { flag: 'wx', mode: 0o600 });
+    ownerRecord = await readPrivate(marker, 8192);
+  }
   const owner = JSON.parse(ownerRecord.data);
   if (owner.version !== 1 || owner.identity !== identity || !owner.files || typeof owner.files !== 'object') throw Error();
   const socket = path.join(dir, 'agent-channel.sock');
@@ -72,7 +93,7 @@ async function remoteOperation() {
   }
   if (input.op === 'install') {
     await privateDir('bin'); await privateDir('src'); await privateDir('agent-channels');
-    const names = ['package.json', 'src/agent-channel.js', 'bin/dot-message.mjs', 'dot-message.mjs'];
+    const names = ['package.json', 'src/agent-channel.js', 'bin/dot-message.mjs', 'dot-message.mjs', 'bin/peer-agent.mjs', 'peer-agent.mjs'];
     if (Object.keys(input.files).sort().join('|') !== [...names].sort().join('|')) throw Error();
     for (const name of names) { if (typeof input.files[name] !== 'string') throw Error(); await replaceOwned(name, input.files[name]); }
     // This marker is owned, O_NOFOLLOW checked above and never contains keys.
@@ -124,23 +145,26 @@ async function remoteOperation() {
 export const REMOTE_CHANNEL_SCRIPT = `try { await (${remoteOperation.toString()})(); } catch { process.exitCode = 1; }`;
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-export function createRemoteChannel({ host, target, stateDir, runRemote, verifyAgent, onMessage,
+export function createRemoteChannel({ host, target, stateDir, runRemote, verifyAgent, onMessage, verifyPeer, onPeerCall,
   forwardFactory = createSshForward, localChannelFactory = createAgentChannel }) {
   const remoteStateDir = validateRemoteStateDir(host.remoteStateDir);
   const identity = createHash('sha256').update(JSON.stringify({ id: host.id, target: target.uri, remoteStateDir })).digest('hex');
   const command = `${quote(validateNodeCommand(host.nodeCommand))} ${quote(posix.join(remoteStateDir, 'dot-message.mjs'))}`;
-  const local = localChannelFactory({ stateDir, verifyAgent, onMessage });
+  const peerCommand = `${quote(validateNodeCommand(host.nodeCommand))} ${quote(posix.join(remoteStateDir, 'peer-agent.mjs'))}`;
+  const local = localChannelFactory({ stateDir, verifyAgent, onMessage, verifyPeer, onPeerCall });
   let tunnel, socketIdentity, bindName, installed, listening, closed = false;
-  const operation = (op, data = {}) => runRemote(REMOTE_CHANNEL_SCRIPT, { op, stateDir: remoteStateDir, identity, ...data });
+  const operation = (op, data = {}) => runRemote(REMOTE_CHANNEL_SCRIPT, { op, stateDir: remoteStateDir, identity, ...data, hostId: host.id });
   async function install() {
     if (!installed) installed = (async () => {
-      const [library, channel] = await Promise.all([
+      const [library, channel, peerLibrary] = await Promise.all([
         readFile(fileURLToPath(new URL('../bin/dot-message.mjs', import.meta.url)), 'utf8'),
         readFile(fileURLToPath(new URL('./agent-channel.js', import.meta.url)), 'utf8'),
+        readFile(fileURLToPath(new URL('../bin/peer-agent.mjs', import.meta.url)), 'utf8'),
       ]);
       await operation('install', { files: {
         'package.json': JSON.stringify({ type: 'module', private: true }),
-        'src/agent-channel.js': channel, 'bin/dot-message.mjs': library,
+        'src/agent-channel.js': channel, 'bin/dot-message.mjs': library, 'bin/peer-agent.mjs': peerLibrary,
+        'peer-agent.mjs': `import { runPeerAgent } from './bin/peer-agent.mjs';\nprocess.exitCode = await runPeerAgent(process.argv.slice(2), { stateDir: ${JSON.stringify(remoteStateDir)} });\n`,
         'dot-message.mjs': `import { runDotMessage } from './bin/dot-message.mjs';\nprocess.exitCode = await runDotMessage(process.argv.slice(2), { stateDir: ${JSON.stringify(remoteStateDir)} });\n`,
       } });
     })().catch(e => { installed = undefined; throw e; });
@@ -180,5 +204,5 @@ export function createRemoteChannel({ host, target, stateDir, runRemote, verifyA
     if (socketIdentity) await operation('cleanup-socket', { socketIdentity, bindName }).catch(() => {});
     await local.close();
   }
-  return { listen, prepare, issue, close, command };
+  return { listen, prepare, issue, close, command, peerCommand };
 }

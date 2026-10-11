@@ -27,6 +27,8 @@ import { DirectFiles } from './direct-files.js';
 import { DirectCommands } from './direct-commands.js';
 import { DirectTransfers } from './direct-transfers.js';
 import { createRemoteHostAdapter } from './host-transport.js';
+import { PeerService } from './peer-service.js';
+import { createPeerNative } from './peer-native.js';
 
 export const SCOPE = 'local-agents';
 
@@ -88,6 +90,8 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   }
   const contexts = [];
   let directTransfers;
+  let peers;
+  const peerNative = createPeerNative({ contexts, getPeers: () => peers });
   const closeContext = async context => {
     await context.directFiles?.close();
     await context.directCommands?.close();
@@ -118,6 +122,8 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
         } });
       collaboration = new Collaboration({ store: collaborationStore, delivery, eventStore, gateway: childGateway, hostId: host.id });
       const channelOptions = { stateDir: host.stateDir,
+        verifyPeer: (agentId, body) => peerNative.verifyPeer(host.id, agentId, body),
+        onPeerCall: (rpc, actor) => peerNative.onPeerCall(rpc, actor),
         verifyAgent: (agentId, body) => collaboration.verifyMessage(agentId, body),
         onMessage: body => collaboration.acceptMessage(body) };
       const channel = adapter ? adapter.channelFactory(channelOptions) : createAgentChannel(channelOptions);
@@ -144,12 +150,14 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
       ...(binaryTransportFactory ? { transportFactory: binaryTransportFactory } : {}) });
     await directTransfers.ready();
     for (const context of contexts) context.directTransfers = directTransfers.forHost(context.host.id);
+    peers = new PeerService({ stateDir: config.stateDir, ...peerNative, ...(callbackClient ? { callbackClient } : {}) });
+    await peers.ready();
   } catch (error) {
-    await Promise.allSettled([Promise.resolve().then(() => directTransfers?.close()), ...contexts.map(closeContext)]);
+    await Promise.allSettled([Promise.resolve().then(() => peers?.close()), Promise.resolve().then(() => directTransfers?.close()), ...contexts.map(closeContext)]);
     try { provider.close(); } catch { /* Preserve the original initialization error. */ }
     throw error;
   }
-  const gateway = new HostRouter(contexts);
+  const gateway = new HostRouter(contexts, peers);
   const { collaboration, eventStore, delivery } = gateway.default;
   provider.onClientRevoked = clientId => gateway.revokeOwner(`local-owner:${clientId}`);
   await gateway.refreshTools();
@@ -159,10 +167,10 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
     .get((req, res) => directTransfers.handleDownload(req, res))
     .head((req, res) => directTransfers.handleDownload(req, res));
   app.use(mcpAuthRouter({ provider, issuerUrl: new URL(config.publicBaseUrl), resourceServerUrl: resource, scopesSupported: [SCOPE], resourceName: 'Local Agents' }));
-  app.get('/healthz', (_req, res) => res.json({ ok: true, name: 'local-agents-mcp', version: '0.5.0' }));
+  app.get('/healthz', (_req, res) => res.json({ ok: true, name: 'local-agents-mcp', version: '0.6.0' }));
   const metadata = getOAuthProtectedResourceMetadataUrl(resource);
   const modern = createModernHandler({ gateway, eventService: gateway,
-    serverInfo: { name: 'local-agents-mcp', version: '0.5.0' } });
+    serverInfo: { name: 'local-agents-mcp', version: '0.6.0' } });
   app.all('/mcp', requireBearerAuth({ verifier: provider, requiredScopes: [SCOPE], resourceMetadataUrl: metadata }), async (req, res) => {
     // Check the intended resource on every request, not just token issuance.
     if (req.auth?.resource?.href !== resource.href) {
@@ -175,7 +183,7 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
     req.mcpOwner = `local-owner:${req.auth.clientId}`;
     if (isModernRequest(req)) { await modern(req, res, req.body); return; }
     const observation = createRequestDiagnostics(req, res, { gateway });
-    const server = new Server({ name: 'local-agents-mcp', version: '0.5.0' }, { capabilities: { tools: {} } });
+    const server = new Server({ name: 'local-agents-mcp', version: '0.6.0' }, { capabilities: { tools: {} } });
     server.onerror = error => observation.report('protocol', error);
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       try { return { tools: await gateway.refreshTools() }; }
@@ -209,13 +217,17 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
     void context.collaboration.start().catch(() => {});
   }
   let closed;
-  return { app, gateway, provider, collaboration, eventStore, delivery, directTransfers, hosts: gateway.contexts,
+  peers.start();
+  return { app, gateway, provider, collaboration, eventStore, delivery, directTransfers, peers, hosts: gateway.contexts,
     close() {
       if (!closed) closed = (async () => {
         try { await modern.close(); }
         finally {
-          try { await directTransfers.close(); }
-          finally { await Promise.allSettled(contexts.map(closeContext)); provider.close(); }
+          try { await peers.close(); }
+          finally {
+            try { await directTransfers.close(); }
+            finally { await Promise.allSettled(contexts.map(closeContext)); provider.close(); }
+          }
         }
       })();
       return closed;
@@ -227,7 +239,7 @@ async function main() {
   const config = await loadConfig(process.argv[2]);
   const runtime = await createGatewayApp(config);
   const listener = runtime.app.listen(config.port, '127.0.0.1', () => {
-    console.log(JSON.stringify({ event: 'gateway_listening', host: '127.0.0.1', port: config.port, version: '0.5.0' }));
+    console.log(JSON.stringify({ event: 'gateway_listening', host: '127.0.0.1', port: config.port, version: '0.6.0' }));
   });
   let stopping = false;
   function stop() {

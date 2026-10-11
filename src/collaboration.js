@@ -149,7 +149,7 @@ export class Collaboration {
     if (target && !matches.length) throw new Error('notificationRouteId has no active subscription for this authenticated workspace');
     return matches[0];
   }
-  async prepareDispatch(name, args, owner, receipt) {
+  async prepareDispatch(name, args, owner, receipt, policy = {}) {
     this.assertOwner(owner);
     let workspace;
     let agentId;
@@ -163,6 +163,16 @@ export class Collaboration {
       agentId = args.agentId;
       previous = this.store.latest(agentId);
       if (previous && previous.owner !== owner) throw new Error('Agent collaboration route belongs to another authenticated connection');
+      if (policy.peer) {
+        const latest = (await this.gateway.checkAgent(agentId)).structuredContent.snapshot;
+        if (policy.authorize(latest) !== true) throw new Error('Peer binding or generation is no longer active');
+        if (latest.status !== 'idle' || latest.activeTurn || (latest.pendingPermissions?.length ?? 0) > 0) return { peerQueued: true };
+        return { ...this.store.begin({ requestId: args.requestId, owner, workspaceId: workspace.workspaceId,
+          cwd: workspace.cwd, agentId, submittedAt: receipt.submittedAt }), peerSnapshot: latest };
+      }
+      // A peer wake owns no dot route. A later normal follow-up still inherits
+      // the last normal request's route rather than the peer request's nulls.
+      if (previous?.requestId.startsWith('peer.')) previous = this.store.forAgent(agentId).filter(r => !r.requestId.startsWith('peer.')).at(-1);
       if (args.replyToMessageId) {
         const m = this.store.getMessage(args.replyToMessageId);
         const r = m && this.store.get(m.requestId);

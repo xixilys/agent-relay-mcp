@@ -25,6 +25,7 @@ async function fixture(t, ssh = false, overrides = {}) {
     const originalScript = quotedScript.slice(1, -1).replaceAll("'\\''", "'");
     const script = overrides.transformScript ? overrides.transformScript(originalScript) : originalScript;
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], options);
+    overrides.onSpawn?.(child);
     spawns.push({ args, child }); return child;
   };
   const transport = createBinaryFileTransport({ host, spawnImpl, ...overrides });
@@ -179,19 +180,72 @@ test('SSH early hash rejection retains its conflict while a large producer is ba
 for (const mode of ['lost', 'malformed', 'connection-closed', 'timeout']) {
   test(`SSH import committed but ${mode} acknowledgement reports resultUnknown`, async t => {
     const resultWrite = 'process.stdout.write(JSON.stringify({ ok: true, ...result }))';
+    const commitMarker = 'TEST_IMPORT_COMMITTED\n';
+    let resolveCommit, rejectCommit, timeoutChild, childClosed;
+    const committed = mode === 'timeout' ? new Promise((resolve, reject) => { resolveCommit = resolve; rejectCommit = reject; }) : null;
     const replacement = mode === 'malformed' ? "process.stdout.write('{truncated')"
       : mode === 'connection-closed' ? 'process.exitCode = 255'
-      : mode === 'timeout' ? 'await new Promise(resolve => setTimeout(resolve, 5000))'
+      : mode === 'timeout' ? `await (async () => { const hold = setInterval(() => {}, 1000);
+        try { await new Promise(resolve => {
+          process.once('SIGTERM', resolve);
+          process.stderr.write(${JSON.stringify(commitMarker)});
+        }); } finally { clearInterval(hold); } })()`
       : "process.stdout.write('')";
     const f = await fixture(t, true, { transformScript: script => {
-      assert.ok(script.includes(resultWrite)); return script.replace(resultWrite, replacement);
-    } });
+      assert.ok(script.includes(resultWrite));
+      if (mode === 'timeout') {
+        // Only the parent deadline is under test. The real remote import must
+        // finish before either side can time out; its ACK then waits for SIGTERM.
+        const remoteDeadline = 'timer = setTimeout(cancel, input.timeoutMs);';
+        assert.ok(script.includes(remoteDeadline));
+        script = script.replace(remoteDeadline, '');
+      }
+      return script.replace(resultWrite, replacement);
+    }, onSpawn: mode === 'timeout' ? child => {
+      timeoutChild = child;
+      childClosed = new Promise(resolve => child.once('close', resolve));
+      let stderr = '';
+      child.stderr.on('data', chunk => {
+        stderr += chunk.toString('utf8');
+        if (stderr.includes(commitMarker)) resolveCommit();
+      });
+      child.once('error', rejectCommit);
+      child.once('close', () => rejectCommit(new Error(`Remote import closed before its commit marker: ${stderr}`)));
+    } : undefined });
     const payload = Buffer.from('committed binary\0data');
-    await assert.rejects(f.transport.importFrom({ ...f.input('committed'), expectedSha256: null }, Readable.from([payload]), { timeoutMs: mode === 'timeout' ? 350 : 5000 }), error => {
-      assert.equal(error.resultUnknown, true);
-      assert.equal(error.code, mode === 'timeout' ? 'transfer_timeout' : 'remote_invalid_output');
-      return true;
-    });
+    // Capture the real clock before mocking so a missing marker or stuck child
+    // fails within a bounded wall time, independent of the controlled deadline.
+    const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout;
+    let watchdog;
+    if (mode === 'timeout') {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      watchdog = realSetTimeout(() => {
+        rejectCommit(new Error('Timed out waiting for the real remote import'));
+        timeoutChild?.kill('SIGKILL');
+      }, 10000);
+    }
+    try {
+      const rejected = assert.rejects(f.transport.importFrom({ ...f.input('committed'), expectedSha256: null }, Readable.from([payload]), { timeoutMs: mode === 'timeout' ? 350 : 5000 }), error => {
+        assert.equal(error.resultUnknown, true);
+        assert.equal(error.code, mode === 'timeout' ? 'transfer_timeout' : 'remote_invalid_output');
+        return true;
+      });
+      // Attach immediately, even if the marker fails before we await rejection.
+      rejected.catch(() => {});
+      if (mode === 'timeout') {
+        await committed;
+        assert.deepEqual(await fs.readFile(join(f.project, 'committed')), payload);
+        t.mock.timers.tick(350);
+      }
+      await rejected;
+    } finally {
+      if (mode === 'timeout') {
+        realClearTimeout(watchdog);
+        if (timeoutChild && timeoutChild.exitCode === null && timeoutChild.signalCode === null) timeoutChild.kill('SIGKILL');
+        await childClosed;
+        t.mock.timers.reset();
+      }
+    }
     assert.deepEqual(await fs.readFile(join(f.project, 'committed')), payload);
     assert.deepEqual(await fs.readdir(f.project), ['committed']);
   });

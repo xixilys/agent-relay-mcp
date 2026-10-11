@@ -11,7 +11,13 @@ export const DEFAULT_AGENT_STATE_DIR = join(homedir(), '.local', 'share', 'local
 export const AGENT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 export const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 export const MAX_MESSAGE_LENGTH = 8192;
-const MAX_BODY_BYTES = 64 * 1024;
+export const MAX_PEER_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = MAX_PEER_BODY_BYTES;
+export const PEER_TOOL_NAMES = Object.freeze([
+  'register_peer', 'list_peers', 'unregister_peer', 'send_peer_message',
+  'get_peer_message', 'list_peer_messages', 'ack_peer_message',
+]);
+const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const uid = () => process.getuid();
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 
@@ -55,6 +61,28 @@ export function validateAgentMessage(value) {
   return value;
 }
 
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const exactKeys = (value, allowed) => object(value) && Object.keys(value).every(key => allowed.includes(key));
+const rpcId = value => typeof value === 'string' ? REQUEST_ID_PATTERN.test(value) : Number.isSafeInteger(value) && value >= 0;
+
+// This scoped private bridge supports only request/response peer tools. It does
+// not provide MCP sessions, notifications, events, or a general tool transport.
+export function validatePeerRequest(value) {
+  if (!object(value) || Object.keys(value).sort().join(',') !== 'agentId,requestId,rpc' ||
+      typeof value.agentId !== 'string' || !AGENT_ID_PATTERN.test(value.agentId) ||
+      typeof value.requestId !== 'string' || !REQUEST_ID_PATTERN.test(value.requestId)) throw failure('invalid_peer_request');
+  const rpc = value.rpc;
+  if (!exactKeys(rpc, ['jsonrpc', 'id', 'method', 'params']) || rpc.jsonrpc !== '2.0' || !rpcId(rpc.id)) throw failure('invalid_peer_request');
+  if (rpc.method === 'tools/list') {
+    if (rpc.params !== undefined && (!exactKeys(rpc.params, ['cursor']) ||
+        (rpc.params.cursor !== undefined && (typeof rpc.params.cursor !== 'string' || rpc.params.cursor.length > 1024)))) throw failure('invalid_peer_request');
+  } else if (rpc.method === 'tools/call') {
+    if (!exactKeys(rpc.params, ['name', 'arguments']) || !PEER_TOOL_NAMES.includes(rpc.params.name) ||
+        (rpc.params.arguments !== undefined && !object(rpc.params.arguments))) throw failure('invalid_peer_request');
+  } else throw failure('invalid_peer_request');
+  return value;
+}
+
 async function socketInUse(path) {
   return new Promise((resolve, reject) => {
     const probe = net.createConnection({ path });
@@ -68,8 +96,13 @@ async function socketInUse(path) {
   });
 }
 
-export function createAgentChannel({ stateDir, onMessage, verifyAgent, cliPath = fileURLToPath(new URL('../bin/dot-message.mjs', import.meta.url)) }) {
-  if (!isAbsolute(stateDir) || typeof onMessage !== 'function' || typeof verifyAgent !== 'function') throw failure('invalid_channel_options');
+export function createAgentChannel({ stateDir, onMessage, verifyAgent, verifyPeer, onPeerCall,
+  cliPath = fileURLToPath(new URL('../bin/dot-message.mjs', import.meta.url)),
+  peerCliPath = fileURLToPath(new URL('../bin/peer-agent.mjs', import.meta.url)) }) {
+  if (!isAbsolute(stateDir) || typeof onMessage !== 'function' || typeof verifyAgent !== 'function' ||
+      (verifyPeer !== undefined && typeof verifyPeer !== 'function') ||
+      (onPeerCall !== undefined && typeof onPeerCall !== 'function') || !isAbsolute(peerCliPath)) throw failure('invalid_channel_options');
+  const peerCommand = `${quote(process.execPath)} ${quote(peerCliPath)}`;
   const socketPath = join(stateDir, 'agent-channel.sock');
   // Node removes its bind pathname on close without checking its inode. Bind
   // privately and publish a hard link so cleanup cannot remove a replaced entry.
@@ -82,7 +115,8 @@ export function createAgentChannel({ stateDir, onMessage, verifyAgent, cliPath =
   const connections = new Set();
   const server = http.createServer(async (request, response) => {
     const reply = (status, value) => { if (!response.destroyed) { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)); } };
-    if (request.method !== 'POST' || request.url !== '/message') { reply(404, { error: 'not_found' }); request.resume(); return; }
+    const isPeer = request.url === '/peer-mcp';
+    if (request.method !== 'POST' || (!isPeer && request.url !== '/message')) { reply(404, { error: 'not_found' }); request.resume(); return; }
     let size = 0;
     const chunks = [];
     try {
@@ -92,8 +126,8 @@ export function createAgentChannel({ stateDir, onMessage, verifyAgent, cliPath =
         chunks.push(chunk);
       }
       let value;
-      try { value = validateAgentMessage(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-      catch { reply(400, { error: 'invalid_message' }); return; }
+      try { value = (isPeer ? validatePeerRequest : validateAgentMessage)(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { reply(400, { error: isPeer ? 'invalid_peer_request' : 'invalid_message' }); return; }
       let key;
       try { key = await readAgentCapability(stateDir, value.agentId); }
       catch { reply(403, { error: 'unauthorized' }); return; }
@@ -101,13 +135,42 @@ export function createAgentChannel({ stateDir, onMessage, verifyAgent, cliPath =
       // Both buffers have fixed size; never compare attacker-controlled lengths.
       const tokenMatches = timingSafeEqual(Buffer.from(key, 'hex'), supplied ? Buffer.from(supplied, 'hex') : Buffer.alloc(32));
       if (!supplied || !tokenMatches) { reply(403, { error: 'unauthorized' }); return; }
+      if (isPeer) {
+        if (!verifyPeer || !onPeerCall) { reply(403, { error: 'request_not_authorized' }); return; }
+        let actor;
+        try { actor = await verifyPeer(value.agentId, { requestId: value.requestId, rpc: value.rpc }); } catch { actor = false; }
+        if (!object(actor) || actor.agentId !== value.agentId ||
+            !['owner', 'hostId'].every(key => typeof actor[key] === 'string' && actor[key].length > 0) ||
+            (actor.peerId !== undefined && (typeof actor.peerId !== 'string' || actor.peerId.length === 0)) ||
+            (actor.generation !== undefined && (!Number.isSafeInteger(actor.generation) || actor.generation <= 0)) ||
+            (actor.peerId === undefined && value.rpc.method === 'tools/call' &&
+              !['register_peer', 'list_peers'].includes(value.rpc.params.name))) {
+          reply(403, { error: 'request_not_authorized' }); return;
+        }
+        // Identity comes only from the verifier. Do not pass additional verifier
+        // fields (including accidental credentials) to the tool implementation.
+        const trustedActor = { owner: actor.owner, hostId: actor.hostId, agentId: actor.agentId,
+          ...(actor.peerId !== undefined ? { peerId: actor.peerId } : {}),
+          ...(actor.generation !== undefined ? { generation: actor.generation } : {}) };
+        try {
+          const result = await onPeerCall(value.rpc, trustedActor);
+          if (!object(result)) throw failure('invalid_peer_result');
+          reply(200, { jsonrpc: '2.0', id: value.rpc.id, result });
+        } catch {
+          // Tool validation belongs in the MCP tool result. Unexpected exceptions
+          // may happen after persistence: do not disclose text or retry the write.
+          reply(500, { jsonrpc: '2.0', id: value.rpc.id, error: { code: -32603, message: 'peer_call_outcome_unknown' },
+            safe_code: 'peer_call_outcome_unknown', retrySafe: false });
+        }
+        return;
+      }
       let verified;
       try { verified = await verifyAgent(value.agentId, value); } catch { verified = false; }
       if (verified !== true) { reply(403, { error: 'request_not_authorized' }); return; }
       const receipt = await onMessage(value);
       if (!receipt || receipt.messageId !== value.messageId || !['accepted', 'duplicate'].includes(receipt.status)) throw failure('invalid_receipt');
       reply(200, { messageId: receipt.messageId, status: receipt.status });
-    } catch { reply(500, { error: 'acceptance_unknown' }); }
+    } catch { reply(500, isPeer ? { error: 'peer_call_outcome_unknown', safe_code: 'peer_call_outcome_unknown', retrySafe: false } : { error: 'acceptance_unknown' }); }
   });
   server.requestTimeout = 5000;
   server.headersTimeout = 5000;
@@ -184,5 +247,5 @@ export function createAgentChannel({ stateDir, onMessage, verifyAgent, cliPath =
     })();
     return closePromise;
   }
-  return { issue, listen, close };
+  return { issue, listen, close, peerCommand };
 }

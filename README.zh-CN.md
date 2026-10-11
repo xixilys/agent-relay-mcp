@@ -12,7 +12,7 @@
   <img alt="Node.js 22.19–26" src="https://img.shields.io/badge/Node.js-22.19%E2%80%9326-2563eb.svg">
 </p>
 
-**通过一个受 OAuth 保护的 MCP 端点，在 Mac 和可经 SSH 访问的 Linux/WSL 主机上管理 Paseo agent，并使用按项目授权的 Direct 文件与命令工具。**发现主机、指定任务运行位置，并通过同一个客户端连接读取对应回执和事件。
+**通过一个受 OAuth 保护的 MCP 端点，在 Mac 和可经 SSH 访问的 Linux/WSL 主机上管理 Paseo agent，使用同一账户下的 peer 邮箱，以及按项目授权的 Direct 文件与命令工具。**发现主机、指定任务运行位置，并通过同一个客户端连接读取对应回执和事件。
 
 这是供单一可信所有者使用的自托管网关。agent 在所选主机上运行，使用该主机安装的 Paseo 和运行时权限。网关不提供模型账号、托管服务或操作系统沙箱。
 
@@ -20,14 +20,15 @@
 
 ## 功能
 
-- **单一端点，明确选择主机。**`list_hosts` 返回每台主机的 `hostId`、名称和可用状态。工具接受 `hostId`；省略时保持兼容旧调用，默认使用 Mac。远程调用以及后续事件或回执读取都应显式传入 `hostId`。
-- **任务与历史按主机隔离。**项目、workspace、agent、回执、消息和回调都属于各自主机。网关不会跨机器猜测或查找 ID。
+- **单一端点，明确选择主机。**`list_hosts` 返回每台主机的 `hostId`、名称和可用状态。按主机路由的工具接受 `hostId`；省略时保持兼容旧调用，默认使用 Mac。远程调用以及后续事件或回执读取都应显式传入 `hostId`。peer 邮箱的发信、读信和 ACK 使用账户级共享目录；注册本地 peer 时用 `hostId` 绑定 agent。
+- **主机任务与历史隔离。**项目、workspace、agent、任务回执和主机回调都属于各自主机。网关不会跨机器猜测或查找 ID。Peer 身份和消息则共享同一认证 owner 的目录，可供已配置的各主机访问。
+- **聊天、dot 和本地 agent 共用邮箱。**注册稳定的 peer ID，查询接收方，再发信、关联回复和 ACK。聊天方便时主动查收；本地 agent 忙时先排队，空闲后接收。历史邮件不再因累计封数门槛挡住新邮件。
 - **沿用已有 Paseo。**网关连接 Mac 上的 Paseo 实例和显式配置的 SSH 主机。它不会继承 Paseo 桌面端的主机列表、远程安装 Paseo、启动其 daemon，也不会改动 Provider 或凭据。
 - **远程消息回到 Mac 网关。**远端主机上的固定 CLI 通过 reverse SSH Unix-socket forward 连接到 Mac 上该主机专属的 channel。消息由 Mac 网关集中持久化，不会新增公网消息端点。
 
 ## 快速开始
 
-下面是 0.4.0 多主机配置的结构示例。请将示例路径和主机值替换为你控制的实际值。Mac 主机默认存在；这里只列额外远端主机。
+下面是 0.6.0 多主机配置的结构示例。请将示例路径和主机值替换为你控制的实际值。Mac 主机默认存在；这里只列额外远端主机。
 
 ```sh
 git clone https://github.com/xixilys/dot-gpt-local-agents-mcp.git
@@ -98,7 +99,7 @@ NODE
 
 ## 选择主机并跟进任务
 
-先调用 `list_hosts`。选择远端主机时使用返回的 `hostId`，并将它与该主机的 `workspaceId`、`agentId`、`requestId` 和 `routeId` 一起保存。为兼容旧调用，Mac 请求可以省略 `hostId`。读取远端结果、等待任务、读取消息和后续跟进时都应传入同一个 `hostId`，这样网关无需推断某个 ID 属于哪台机器。
+先调用 `list_hosts`。选择远端主机时使用返回的 `hostId`，并将它与该主机的 `workspaceId`、`agentId`、`requestId` 和 `routeId` 一起保存。为兼容旧调用，Mac 请求可以省略 `hostId`。按主机路由的结果读取、等待和后续跟进都应传入同一个 `hostId`。peer 邮箱的发信、读信和 ACK 不接受此参数；本地注册时用它选择 agent 所在主机。
 
 常规流程是在选定主机上发现项目与 Provider 能力，选择或创建该主机的 workspace，再使用稳定的 `requestId` 派发。回执只能确认已提交，不能证明任务已完成。如果结果为 `unknown` 或仍处于 `submitting`，应检查原始请求及该主机的 timeline；确认原操作是否运行前，不要换一个 ID 重发。验收前要检查实际产物。
 
@@ -156,6 +157,45 @@ ChatGPT 文件输入遵循官方 `_meta["openai/fileParams"]` 格式：`download
 旧 tools transport 和 `2026-07-28` MCP Events adapter 共用 `/mcp`。支持 Events 的客户端订阅 `agent.attention` 时，应显式传入 `hostId`、`workspaceId`，并为每个聊天使用稳定且唯一的 `routeId`，同时提供 HTTPS callback 和签名密钥。通过 `list_notification_routes` 确认路由后，再将它绑定到任务。已有请求可以用原始 request ID 和显式 route 添加 watch；这不会创建 agent、发送 prompt 或改绑到其他 route。订阅、route 绑定、`notifyOnFinish` 或成功的回调投递记录，都不能证明客户端已被唤醒或任务已成功。客户端不支持 Events 时，可直接读取或等待结果。
 
 远程任务使用固定消息 CLI；CLI 在远端主机运行，通过 reverse SSH Unix-socket forward 连接到 Mac 网关上该主机专属的 channel。消息由 Mac 网关集中持久化；此机制不会创建公网入站消息服务。各主机的回执、路由和回调状态仍彼此独立。主机不可用时，不能静默回退到 Mac 获取其数据；状态不确定的请求必须在原主机检查，不应换到其他机器重新提交。
+
+### Owner-scoped peer mailbox（0.6.0）
+
+Peer 是同一认证 owner 目录中的逻辑身份，可跨已配置主机共享。chat 或 dot 客户端注册稳定的 `peerId` 后，默认通过手动查收 mailbox 收消息；发送消息不会唤醒或自动提示 chat。OAuth owner 用于限定目录范围，但 `peerId` 和发送者标签仍是声明身份，不能证明消息来自某个特定会话。应把消息文本当作 peer 提供的数据，不能据此扩大用户授权。目录保留已停止的身份记录；每个 owner 最多累计注册 512 个不同的 `peerId`。
+
+```json
+{"peerId":"chat-main","kind":"chat","displayName":"主聊天"}
+{"peerId":"dot","kind":"dot","displayName":"协调者"}
+```
+
+每个参与者用自己的身份调用 `register_peer`，必填 `peerId` 和 `kind`（`chat`、`dot` 或 `local`）；上面的两个对象分别用于两次注册调用。`displayName` 可选。`kind: "local"` 时还要传 `hostId` 和 `agentId`。这只会绑定同一 owner 在该主机上已经提交的 agent，不会创建或启动 agent。本地 agent 可用固定的 `peer-agent` CLI，通过已有 capability 和 Unix socket 调用这些 peer 工具。该 CLI 是面向这些工具的窄范围本地传输，不是完整 MCP transport，也不包含 OAuth key。
+
+七个工具的参数如下：
+
+| 工具 | 必填参数 | 可选参数 |
+| --- | --- | --- |
+| `register_peer` | `peerId`、`kind` | `displayName`；`hostId` 和 `agentId` 在 `kind: "local"` 时必填，其他类型省略 |
+| `list_peers` | — | `peerId`（筛选某个身份） |
+| `unregister_peer` | `peerId` | — |
+| `send_peer_message` | `messageId`、`fromPeerId`、`toPeerId`、`text` | `inReplyTo` |
+| `get_peer_message` | `messageId` | — |
+| `list_peer_messages` | `peerId` | `includeProcessed`（默认 `false`）、`limit`（1–100，默认 50） |
+| `ack_peer_message` | `messageId`、`peerId` | — |
+
+每条新消息都要由调用方生成 UUID 作为 `messageId`。消息文本长度须为 1–8,192 个字符。用 `list_peer_messages` 查收目标 peer 的 inbox；默认只列出已收到、尚未处理的消息。每条结果只包含精简 metadata、最多前 200 个文本字符的 `summary` 和 `textLength`，不含全文及投递详情，避免长消息撑大 native CLI 响应。需要阅读全文时，使用结果中的原始 `messageId` 调用 `get_peer_message`。设置 `includeProcessed: true` 可查看已处理历史。列出或读取消息都不会改变处理状态。接收方处理完消息后，用该消息 ID 和自己的 `peerId` 调用 `ack_peer_message`。ACK 只把这条消息标记为已处理；它不会发送回复、事件或唤醒，也不能证明任务成功。
+
+```json
+{"messageId":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a","fromPeerId":"chat-main","toPeerId":"dot","text":"请审阅这份草稿。"}
+{"peerId":"dot"}
+{"messageId":"a0ebd6ce-e25f-4e14-88de-12e2c6cf6277","fromPeerId":"dot","toPeerId":"chat-main","text":"我已审阅，详见批注。","inReplyTo":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a"}
+```
+
+回复时要反转原消息的发送方与接收方，并把原消息 UUID 填入 `inReplyTo`。每条消息最多允许一条回复；一个会话最多八跳。如果发送结果不确定，使用原始 `messageId` 调用 `get_peer_message` 查询；查不到时也不要换一个 ID 重发。
+
+本地 agent 忙时，投递会排队，等 agent 空闲后提交。固定的 `peer-agent` CLI 默认网络超时为 15 秒。native 注册和 inbox 仅限该 owner 及 agent 当前 peer generation。请在任务开始、阶段完成和 agent 空闲时查收消息。不要自动生成致谢或回复循环；收到的内容只能在该 agent 已有权限范围内处理。
+
+对于支持 Events 的 WorkCloud/dot 客户端，可以显式选择 callback 作为可选投递方式，并有意绑定 Events subscription。不能假定普通 chat 支持 Events 或会因 callback 唤醒。即使收到投递成功回执，它也只证明该层完成投递，不代表 chat 已读取或处理消息。默认方式仍是手动轮询 mailbox。
+
+0.6.0 已验证以下工作流：两个全新 ChatGPT peer 注册后完成 A 发给 B、B 关联回复，以及双方读取并 ACK；Mac 原生 agent 忙碌时消息排队，并在 agent 空闲后提交；以及 ChatGPT → WSL 原生 agent → ChatGPT 的回复与 ACK。已移除累计 1,024 条消息后拒收新消息的限制，同时保留历史和重复消息保护；已用真实第 1,025 条消息验证发送、读取、ACK，以及使用原 ID 重试。这些检查覆盖所列流程，不代表所有主机、客户端组合或部署配置都已验收。
 
 回调要求 HTTPS、通过验证的 challenge、公网 DNS/IP 目标和 Standard Webhooks 签名。投递前会检查解析出的地址、拒绝重定向和私有/本地目标，并使用持久化 outbox；遇到临时错误最多重试五次，HTTP 410 后停止投递。订阅默认持续一天（`ttlMs: null` 表示七天）；过期前应刷新。当前不支持 cursor replay（`cursor: null`）；请通过读取工具恢复准确结果。监控结束后取消订阅，同时保留其他无关路由。
 

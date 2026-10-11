@@ -3,6 +3,7 @@ import { jsonResult } from './gateway.js';
 import { ATTENTION_EVENT } from './collaboration.js';
 import { directProjects, assertOwner } from './direct-policy.js';
 import { DEFAULT_HOST_ID, pinHost } from './hosts.js';
+import { PEER_EVENT } from './peer-service.js';
 
 const listHosts = {
   name: 'list_hosts', title: 'List configured agent hosts',
@@ -40,7 +41,8 @@ function attributed(result, hostId) {
 }
 
 export class HostRouter {
-  constructor(contexts) {
+  constructor(contexts, peers) {
+    this.peers = peers;
     this.contexts = new Map(contexts.map(context => [context.host.id, context]));
     this.default = this.contexts.get(DEFAULT_HOST_ID);
     if (!this.default) throw new Error('The legacy Mac context is required');
@@ -100,6 +102,7 @@ export class HostRouter {
       first.description += ' hostId selects a configured host; omission always means mac. Target-specific inputs are validated by that host.';
       next.set(name, { tool: first, validate: this.ajv.compile(first.inputSchema) });
     }
+    for (const tool of this.peers?.tools() ?? []) next.set(tool.name, { tool, validate: this.ajv.compile(tool.inputSchema) });
     this.catalog = next;
     return [...next.values()].map(entry => entry.tool);
   }
@@ -115,6 +118,7 @@ export class HostRouter {
       available: status.available === true, directConfigured: directProjects(context.host).length > 0, ...(status.reason ? { reason: status.reason } : {}) };
   }
   async call(name, args = {}, options = {}) {
+    if (this.peers?.validators.has(name)) return jsonResult(await this.peers.call(name, args, options));
     if (name === 'list_hosts') {
       if (!this.catalog.get(name)?.validate(args)) throw new Error('list_hosts takes no arguments');
       return jsonResult({ hosts: await Promise.all([...this.contexts.values()].map(context => this.hostStatus(context))) });
@@ -153,7 +157,7 @@ export class HostRouter {
     definition.description = 'An agent on a subscribed host has a message, needs input or permission, or has an observed result. Use its hostId and exact request/message. Legacy payloads without hostId belong to mac; an event is not task acceptance.';
     definition.inputSchema.properties.hostId = { type: 'string', enum: [...this.contexts.keys()], description: 'Target host; omission means mac.' };
     definition.payloadSchema.properties.hostId = { type: 'string', enum: [...this.contexts.keys()] };
-    return { events: [definition] };
+    return { events: [definition, ...(this.peers?.list(owner).events ?? [])] };
   }
   eventContext(params) {
     if (params.name !== ATTENTION_EVENT) throw new Error('Unknown event');
@@ -164,6 +168,7 @@ export class HostRouter {
     return { context, params: { ...params, arguments: context.host.id === DEFAULT_HOST_ID ? args : { ...args, hostId: context.host.id } } };
   }
   async subscribe(owner, params) {
+    if (params.name === PEER_EVENT && this.peers) return this.peers.subscribe(owner, params);
     const routed = this.eventContext(params);
     if (routed.context.host.id !== DEFAULT_HOST_ID) {
       const status = await routed.context.adapter.status();
@@ -173,10 +178,12 @@ export class HostRouter {
     return routed.context.collaboration.subscribe(owner, routed.params);
   }
   unsubscribe(owner, params) {
+    if (params.name === PEER_EVENT && this.peers) return this.peers.unsubscribe(owner, params);
     const routed = this.eventContext(params);
     return routed.context.collaboration.unsubscribe(owner, routed.params);
   }
   revokeOwner(owner) {
+    this.peers?.revokeOwner(owner);
     return Promise.all([...this.contexts.values()].flatMap(context => [context.delivery.revokeOwner(owner),
       context.directTransfers?.revokeOwner(owner)]));
   }
