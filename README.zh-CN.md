@@ -136,6 +136,8 @@ Direct Workspace 在现有 Node.js 网关中增加按项目授权的文件与命
 
 命令请求以 `requestId` 持久记录：再次读取会返回原记录，不会重新运行。交互式 stdin 写入使用可去重的 `inputId`；命令输出有界，并通过 cursor 分页。若网关在进程运行期间重启，请求记录可能变为 `interrupted` 或 `unknown`；网关不承诺恢复该进程。Direct Workspace 的可用性独立于 Paseo daemon 健康状态。
 
+输出缓存淘汰会通过 `lostCount` 和 `truncated` 显示。若工作进程的控制连接丢失或拥塞，命令结果可能变为 `unknown`；原命令和输入 ID 仍保留，不会自动重放。
+
 ## Direct binary files
 
 Direct binary transfer 在项目与网关之间传输原始文件字节，不把内容放进模型文本或 base64，也不经由 Drive 或 Git。本机与 SSH/WSL 使用固定的流式传输路径。每次调用都选择 `hostId`；导出和导入还会指定 `projectId`。导出沿用项目已有的读取权限，导入沿用写入权限。

@@ -147,14 +147,64 @@ test('registered authorization matches whole argv and does not depend on file re
 
 test('output cache and individual reads are bounded and overflow/Unicode loss remains visible', async t => {
   const f = await fixture(t, { maxOutputBytes: 32768 });
-  const r = await started(f, node(`for(let i=0;i<400;i++) process.stdout.write('😀'.repeat(1000));process.stderr.write('tail')`));
+  const batch = '😀'.repeat(1000);
+  const r = await started(f, node(String.raw`let input='';process.stdin.on('data',chunk=>{input+=chunk.toString();let newline;while((newline=input.indexOf('\n'))>=0){input=input.slice(newline+1);process.stdout.write('😀'.repeat(1000))}});process.stdin.on('end',()=>process.stderr.write('tail'))`));
+  let cursor = 0;
+  // Evict the 32KiB cache without also overloading the worker's 64KiB IPC
+  // queue. Each next batch waits for actual stdout to reach the gateway reader.
+  for (let i = 0; i < 32; i++) {
+    assert.equal((await f.call('write_direct_command_input', { commandId: r.commandId, inputId: `batch-${i}`, text: 'next\n' })).state, 'accepted');
+    let output = '';
+    const deadline = Date.now() + 5000;
+    while (Buffer.byteLength(output) < Buffer.byteLength(batch)) {
+      assert.ok(Date.now() < deadline, `Batch ${i} did not reach the output reader`);
+      const observed = await f.call('read_direct_command', { commandId: r.commandId, cursor, waitMs: 50 });
+      assert.equal(observed.lostCount, 0);
+      assert.equal(observed.state, 'running');
+      output += observed.events.filter(e => e.source === 'stdout').map(e => e.text).join('');
+      cursor = observed.nextCursor;
+    }
+    assert.equal(output, batch);
+  }
+  assert.equal((await f.call('write_direct_command_input', { commandId: r.commandId, inputId: 'eof', eof: true })).state, 'accepted');
   const end = await terminal(f, r.commandId);
   const read = await f.call('read_direct_command', { commandId: r.commandId, limit: 1000 });
   assert.ok(read.lostCount > 0); assert.equal(read.truncated, true);
+  assert.ok(read.events.length > 1);
   assert.ok(f.commands.outputBytes <= 32768);
   assert.ok(Buffer.byteLength(JSON.stringify(read)) <= 65536);
   assert.ok(read.events.every(e => !e.text.includes('�')));
+  assert.equal(end.state, 'exited');
   assert.equal(end.exitCode, 0);
+});
+
+test('real worker IPC overload reports unknown and never resends the original command or input', async t => {
+  let spawns = 0;
+  const f = await fixture(t, { spawnImpl: (...args) => { spawns++; return spawn(...args); } });
+  const argv = node(`process.stdin.once('data',()=>{for(let i=0;i<400;i++) process.stdout.write('😀'.repeat(1000));process.stdin.destroy()})`);
+  const r = await started(f, argv, 'overload');
+  await f.commands.runtime.get(r.commandId).submission;
+  const worker = f.commands.worker;
+  const exited = new Promise(resolve => worker.once('exit', resolve));
+  const input = { commandId: r.commandId, inputId: 'flood', text: 'start' };
+  // Stop draining the real IPC pipe so its bounded control queue must close.
+  worker.stdout.pause();
+  const delivery = f.call('write_direct_command_input', input);
+  delivery.catch(() => {});
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Overloaded worker did not exit')), 5000);
+    })]);
+  } finally { clearTimeout(timer); worker.stdout.resume(); }
+  const receipt = await delivery;
+  const end = await terminal(f, r.commandId);
+  assert.equal(end.state, 'unknown'); assert.equal(end.exitCode, null);
+  const duplicate = await started(f, argv, 'overload');
+  assert.equal(duplicate.commandId, r.commandId); assert.equal(duplicate.state, 'unknown'); assert.equal(duplicate.duplicate, true);
+  const repeatedInput = await f.call('write_direct_command_input', input);
+  assert.equal(repeatedInput.state, receipt.state); assert.equal(repeatedInput.duplicate, true);
+  assert.equal(spawns, 1);
 });
 
 test('lost worker response preserves original request and input receipts without resending', async t => {

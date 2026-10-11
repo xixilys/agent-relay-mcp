@@ -136,6 +136,8 @@ Commands can stay disabled, use `commandMode: "registered"` with owner-configure
 
 Command requests are durable and keyed by `requestId`: rereading a request returns its recorded state and does not run it again. Interactive stdin writes use a deduplicated `inputId`; output reads are bounded and paginated by cursor. If the gateway restarts while a process is active, its record may become `interrupted` or `unknown`; the gateway does not promise to resume that process. Direct Workspace availability is independent of Paseo daemon health.
 
+Output-cache eviction is visible through `lostCount` and `truncated`. If the worker's control connection is lost or overwhelmed, the command outcome can become `unknown`; the original command and input IDs are retained without automatic replay.
+
 ## Direct binary files
 
 Direct binary transfers move file bytes between a project and the gateway without putting them into model text or base64, or routing them through Drive or Git. Local and SSH/WSL transfers use the fixed streaming path. Every call selects a `hostId`; export and import also name a `projectId`. Export uses the project's existing read permission, and import its write permission.
