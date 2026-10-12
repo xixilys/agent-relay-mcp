@@ -29,10 +29,29 @@ import { DirectTransfers } from './direct-transfers.js';
 import { createRemoteHostAdapter } from './host-transport.js';
 import { PeerService } from './peer-service.js';
 import { createPeerNative } from './peer-native.js';
+import { createOwnerPolicy } from './shared-owner.js';
 
 export const SCOPE = 'local-agents';
 
 export class LocalAgentsOAuthProvider extends SingleUserOAuthProvider {
+  constructor(...args) {
+    super(...args);
+    const register = this.clientsStore.registerClient.bind(this.clientsStore);
+    this.clientsStore.registerClient = client => {
+      try { return register(client); }
+      catch (error) {
+        if (error?.message === 'Client redirect_uri is not allowed for this DevSpace server') {
+          try {
+            const origins = [...new Set((client.redirect_uris ?? []).slice(0, 8).map(uri => {
+              try { return new URL(uri).origin; } catch { return 'invalid'; }
+            }))];
+            process.stderr.write(`${JSON.stringify({ event: 'oauth_redirect_rejected', at: new Date().toISOString(), origins })}\n`);
+          } catch { /* Diagnostics must not change registration or expose raw input. */ }
+        }
+        throw error;
+      }
+    };
+  }
   async revokeToken(client, request) {
     const hash = createHash('sha256').update(request.token).digest('base64url');
     const record = this.oauthStore.getAccessToken(hash) ?? this.oauthStore.getRefreshToken(hash);
@@ -69,12 +88,14 @@ export async function loadConfig(filename = fileURLToPath(new URL('../config.jso
   for (const field of ['stateDir', 'ownerTokenFile', 'paseoCommand']) if (!isAbsolute(config[field] ?? '')) throw new Error(`${field} must be an absolute path`);
   if (!Array.isArray(config.allowedRoots) || !config.allowedRoots.length || config.allowedRoots.some(root => !isAbsolute(root))) throw new Error('allowedRoots must contain absolute directory paths');
   configuredHosts(config);
+  createOwnerPolicy(config);
   return config;
 }
 
 export async function createGatewayApp(config, { upstream = new PaseoUpstream(config.upstreamUrl), oauthProvider,
   callbackClient, observerFactory = options => new ObserverClient(options),
   hostAdapterFactory = createRemoteHostAdapter, fileDownloadClient, binaryTransportFactory } = {}) {
+  const ownerPolicy = createOwnerPolicy(config);
   await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
   await chmod(config.stateDir, 0o700);
   const resource = new URL('/mcp', config.publicBaseUrl);
@@ -84,7 +105,7 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
     if (typeof auth.ownerToken !== 'string' || auth.ownerToken.length < 32) throw new Error('A strong ownerToken is required');
     provider = new LocalAgentsOAuthProvider({
       ownerToken: auth.ownerToken, scopes: [SCOPE],
-      allowedRedirectHosts: ['chatgpt.com', 'chat.openai.com'],
+      allowedRedirectHosts: ['chatgpt.com', 'chat.openai.com', 'www.cursor.com'],
       accessTokenTtlSeconds: 3600, refreshTokenTtlSeconds: 30 * 24 * 3600,
     }, resource, config.stateDir);
   }
@@ -150,7 +171,7 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
       ...(binaryTransportFactory ? { transportFactory: binaryTransportFactory } : {}) });
     await directTransfers.ready();
     for (const context of contexts) context.directTransfers = directTransfers.forHost(context.host.id);
-    peers = new PeerService({ stateDir: config.stateDir, ...peerNative, ...(callbackClient ? { callbackClient } : {}) });
+    peers = new PeerService({ stateDir: config.stateDir, peerWakeTargets: config.peerWakeTargets, ...peerNative, ...(callbackClient ? { callbackClient } : {}) });
     await peers.ready();
   } catch (error) {
     await Promise.allSettled([Promise.resolve().then(() => peers?.close()), Promise.resolve().then(() => directTransfers?.close()), ...contexts.map(closeContext)]);
@@ -159,7 +180,7 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   }
   const gateway = new HostRouter(contexts, peers);
   const { collaboration, eventStore, delivery } = gateway.default;
-  provider.onClientRevoked = clientId => gateway.revokeOwner(`local-owner:${clientId}`);
+  provider.onClientRevoked = clientId => ownerPolicy.revokeClient(clientId, owner => gateway.revokeOwner(owner));
   await gateway.refreshTools();
   const app = createMcpExpressApp({ host: '127.0.0.1', allowedHosts: ['127.0.0.1', 'localhost', new URL(config.publicBaseUrl).hostname] });
   app.disable('x-powered-by');
@@ -180,7 +201,7 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
     }
     if (req.method !== 'POST') { res.set('Allow', 'POST').sendStatus(405); return; }
     if (typeof req.auth?.clientId !== 'string' || !req.auth.clientId.length) { res.sendStatus(401); return; }
-    req.mcpOwner = `local-owner:${req.auth.clientId}`;
+    req.mcpOwner = ownerPolicy.ownerForClient(req.auth.clientId);
     if (isModernRequest(req)) { await modern(req, res, req.body); return; }
     const observation = createRequestDiagnostics(req, res, { gateway });
     const server = new Server({ name: 'local-agents-mcp', version: '0.6.0' }, { capabilities: { tools: {} } });

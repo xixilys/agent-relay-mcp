@@ -1,5 +1,5 @@
 {
-  "name": "dot-gpt-local-agents-mcp",
+  "name": "agent-relay-mcp",
   "version": "0.6.0",
   "private": true,
   "type": "module",
@@ -21,10 +21,10 @@
   },
   "license": "MIT",
   "author": "xixilys",
-  "description": "Let dot and GPT dispatch and manage local Paseo agents through an OAuth-protected MCP gateway.",
+  "description": "A self-hosted MCP gateway for cross-client messaging, event wake-ups, Paseo agents, and workspace files and commands across Mac and SSH hosts.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xixilys/dot-gpt-local-agents-mcp.git"
+    "url": "https://github.com/xixilys/agent-relay-mcp.git"
   },
   "engines": {
     "node": ">=22.19 <27"

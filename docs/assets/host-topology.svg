@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 400" role="img" aria-labelledby="title desc">
-  <title id="title">Multi-host gateway topology</title>
-  <desc id="desc">An MCP client connects to one OAuth gateway on Mac. The gateway uses local Paseo and a private reverse SSH Unix-socket forward to a separately managed remote Paseo host. Remote messages return to a host-specific channel and are centrally persisted by the Mac gateway; project and agent identifiers remain host-local.</desc>
+  <title id="title">Agent Relay MCP topology</title>
+  <desc id="desc">Trusted dot, ChatGPT and Grok Bot clients connect to one OAuth gateway on Mac, with optional shared access and capability-specific mailbox notifications. The gateway uses local Paseo and a private reverse SSH Unix-socket forward to a separately managed remote Paseo host. Remote messages return to a host-specific channel and are centrally persisted by the Mac gateway; project and agent identifiers remain host-local.</desc>
   <defs>
     <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#f8fbff"/>
@@ -18,19 +18,20 @@
     </marker>
   </defs>
   <rect x="1" y="1" width="1098" height="398" rx="24" fill="url(#panel)" stroke="#d8e6f1"/>
-  <text x="42" y="47" fill="#15324b" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="19" font-weight="750">One endpoint · host-local ownership</text>
-  <text x="42" y="72" fill="#587187" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13">Choose a host explicitly; receipts, events, and workspace IDs stay with that host.</text>
+  <text x="42" y="47" fill="#15324b" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="19" font-weight="750">Agent Relay MCP · shared access across clients</text>
+  <text x="42" y="72" fill="#587187" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13">Optional shared mailboxes and permissions; select hostId for host-local work.</text>
   <rect x="42" y="145" width="180" height="118" rx="17" fill="#fff" stroke="#c6d9e8" stroke-width="1.5"/>
   <circle cx="70" cy="177" r="12" fill="#d9f5f0"/>
   <path d="M65 177h10m-5-5v10" stroke="#0f8b80" stroke-width="2" stroke-linecap="round"/>
-  <text x="94" y="182" fill="#18354e" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="17" font-weight="700">MCP client</text>
-  <text x="62" y="214" fill="#557086" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13">OAuth · one endpoint</text>
-  <text x="62" y="237" fill="#557086" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13">hostId on remote calls</text>
+  <text x="94" y="182" fill="#18354e" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="17" font-weight="700">Trusted clients</text>
+  <text x="62" y="214" fill="#557086" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13">dot · ChatGPT · Grok Bot</text>
+  <text x="62" y="237" fill="#557086" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13">OAuth · Events / Webhook</text>
   <rect x="305" y="132" width="225" height="144" rx="20" fill="url(#gateway)"/>
   <text x="337" y="177" fill="#d9fffa" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" font-weight="700" letter-spacing="1.5">OWNER-CONFIGURED</text>
-  <text x="337" y="207" fill="#fff" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="21" font-weight="750">MCP gateway</text>
-  <text x="337" y="233" fill="#c1e2ee" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="12">Paseo tools · Direct Workspace</text>
-  <text x="337" y="252" fill="#c1e2ee" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="12">Mac default · SSH remotes</text>
+  <text x="337" y="207" fill="#fff" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="21" font-weight="750">Agent Relay MCP</text>
+  <text x="337" y="233" fill="#c1e2ee" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="12">Paseo · Direct · peer mailboxes</text>
+  <text x="337" y="252" fill="#c1e2ee" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="12">Optional sharedOwner: true</text>
+  <path d="M290 225h-68" fill="none" stroke="#4f83c3" stroke-width="2" marker-end="url(#arrowBlue)"/>
   <path d="M222 204h68" fill="none" stroke="#34b3ac" stroke-width="3" marker-end="url(#arrow)"/>
   <path d="M530 174h57" fill="none" stroke="#34b3ac" stroke-width="3" marker-end="url(#arrow)"/>
   <path d="M530 233h57" fill="none" stroke="#4f83c3" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#arrowBlue)"/>

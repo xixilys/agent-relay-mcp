@@ -91,6 +91,16 @@ export class EventStore {
   getSubscriptionInternal(id) {
     return subscription(this.db.prepare('SELECT * FROM event_subscriptions WHERE id=?').get(id), true);
   }
+  resolveSubscriptionId(owner, url, name, args) {
+    // Offline owner migration preserves IDs referenced by bindings and outbox.
+    // Include expired/stopped rows so a renewal does not create a second ID.
+    const identity = canonicalJSON(args);
+    const matches = this.db.prepare(`SELECT id,arguments_json FROM event_subscriptions
+      WHERE owner=? AND callback_url=? AND name=?`).all(owner, url, name)
+      .filter(row => canonicalJSON(JSON.parse(row.arguments_json)) === identity);
+    if (matches.length > 1) throw new Error('Conflicting event subscription identities');
+    return matches[0]?.id ?? subscriptionId(owner, url, name, args);
+  }
   activeSubscriptions({ owner, name, now = Date.now() } = {}) {
     return this.db.prepare(`SELECT * FROM event_subscriptions WHERE state='active' AND expires_at>?
       AND (? IS NULL OR owner=?) AND (? IS NULL OR name=?) ORDER BY created_at,id`)

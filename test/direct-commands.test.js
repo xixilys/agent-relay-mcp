@@ -32,6 +32,18 @@ async function terminal(f, commandId, budget = 5000) {
   assert.fail(`Command did not terminate: ${receipt.state}`);
 }
 const node = code => [process.execPath, '-e', code];
+
+test('migrated command receipt is shared without replay or accepting changed arguments', async t => {
+  const f = await fixture(t), argv = node("process.stdout.write('once')");
+  const receipt = await started(f, argv, 'shared-migration');
+  await terminal(f, receipt.commandId);
+  f.commands.db.prepare('UPDATE direct_commands SET legacy_owner=owner,owner=? WHERE command_id=?').run('local-owner:shared', receipt.commandId);
+  const recovered = await f.call('run_direct_command', { projectId: 'p', argv, requestId: 'shared-migration' }, 'local-owner:shared');
+  assert.equal(recovered.commandId, receipt.commandId);
+  assert.equal(recovered.duplicate, true);
+  await assert.rejects(f.call('run_direct_command', { projectId: 'p', argv: node("process.stdout.write('changed')"), requestId: 'shared-migration' }, 'local-owner:shared'), /different command/);
+  await assert.rejects(f.call('read_direct_command', { commandId: receipt.commandId }, owner), /Unknown Direct/);
+});
 async function started(f, argv, requestId = 'one', extra = {}) {
   const result = await f.call('run_direct_command', { projectId: 'p', argv, requestId, ...extra });
   assert.match(result.commandId, /^[a-f0-9-]{36}$/); return result;

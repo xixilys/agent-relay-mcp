@@ -27,6 +27,23 @@ async function fixture(t,options = {}) {
 const subscription = (peerId = 'receiver',generation = 1,url = 'https://callback.example/receiver') => ({ name: PEER_EVENT,
   arguments: { peerId,generation },delivery: { mode: 'webhook',url,secret },ttlMs: 60_000 });
 
+test('migrated peer subscription renews its preserved binding and outbox ID', async t => {
+  const { service,call } = await fixture(t);
+  const original = await service.subscribe('owner', subscription());
+  await call('send_peer_message', send());
+  service.eventStore.db.prepare('UPDATE event_subscriptions SET owner=?').run('local-owner:shared');
+  service.store.db.prepare('UPDATE peers SET owner=?').run('local-owner:shared');
+  service.store.db.prepare('UPDATE peer_messages SET owner=?').run('local-owner:shared');
+  const renewed = await service.subscribe('local-owner:shared', subscription());
+  assert.equal(renewed.id, original.id);
+  assert.equal(service.store.getPeer('local-owner:shared', 'receiver').subscriptionId, original.id);
+  assert.equal(service.eventStore.activeSubscriptions({ now: 1000 }).length, 1);
+  assert.equal(service.eventStore.listDeliveries().length, 1);
+  assert.equal(service.eventStore.listDeliveries()[0].subscriptionId, original.id);
+  service.unsubscribe('local-owner:shared', subscription());
+  assert.equal(service.eventStore.getSubscriptionInternal(original.id).state, 'stopped');
+});
+
 test('pending mailbox first bind emits fixed original event; read/ACK never emit and callback receipt differs from processing',async t => {
   const { service,call,posts } = await fixture(t);
   const args = send(); const accepted = await call('send_peer_message',args);

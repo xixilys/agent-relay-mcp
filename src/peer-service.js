@@ -1,7 +1,8 @@
 import Ajv from 'ajv';
+import { PeerWebhookWake } from './peer-webhook-wake.js';
 import { join } from 'node:path';
 import { PeerStore, PEER_ID_PATTERN, MESSAGE_ID_PATTERN } from './peer-store.js';
-import { EventStore, canonicalJSON, subscriptionId } from './event-store.js';
+import { EventStore, canonicalJSON } from './event-store.js';
 import { EventDelivery, callbackURL } from './event-delivery.js';
 
 export const PEER_EVENT = 'peer.message';
@@ -31,7 +32,7 @@ const definition = {
 const own = owner => { if (typeof owner !== 'string' || !owner) throw new Error('Authenticated owner is required'); };
 
 export class PeerService {
-  constructor({ stateDir,resolveNative,dispatchNative,inspectNative,callbackClient,now = Date.now }) {
+  constructor({ stateDir,resolveNative,dispatchNative,inspectNative,callbackClient,peerWakeTargets = [],now = Date.now }) {
     Object.assign(this,{ resolveNative,dispatchNative,inspectNative,now });
     this.store = new PeerStore(join(stateDir,'peers'));
     this.eventStore = new EventStore(join(stateDir,'peers'));
@@ -41,6 +42,9 @@ export class PeerService {
     this.delivery = new EventDelivery({ store: this.eventStore,callbackClient,now,
       validateSubscription: (name,args) => name === PEER_EVENT && this.validateFilter(args),
       authorizeSubscription: (name,args,owner) => this.authorizeFilter(owner,name,args) });
+    this.webhookWake = new PeerWebhookWake({ store: this.store,targets: peerWakeTargets,callbackClient,now,
+      hasMcpCallback: t => this.eventStore.activeSubscriptions({ owner: t.owner,name: PEER_EVENT,now: this.now() })
+        .some(s => s.arguments.peerId === t.peerId && s.arguments.generation === t.generation) });
     this.scanRowId = 0;
     this.peerLocks = new Map(); this.peerRevisions = new Map(); this.ownerRevisions = new Map(); this.flushPromise = null; this.timer = null; this.started = false; this.closed = false;
   }
@@ -71,6 +75,7 @@ export class PeerService {
     return { peerId: p.peerId,kind: p.kind,displayName: p.displayName,generation: p.generation,state: p.state,
       senderIdentityAssurance: p.senderIdentityAssurance,
       endpointState: p.state !== 'active' ? 'stopped' : p.kind === 'local' ? 'native_bound' : bound ? 'callback_bound' : 'mailbox_only',
+      ...(this.webhookWake.initialized && this.webhookWake.matches(p.owner,p.peerId,p.generation) && this.webhookWake.eligible(p) ? { wakeNotificationMode: 'webhook' } : {}),
       wakeMode: p.kind === 'local' ? 'native_idle' : p.state === 'active' && bound ? 'event' : 'manual',
       ...(sub ? { expiresAt: sub.expiresAt } : {}),
       ...(p.binding ? { hostId: p.binding.hostId,agentId: p.binding.agentId } : {}),
@@ -81,8 +86,10 @@ export class PeerService {
     const { owner,eventRecorded,...result } = m;
     const deliveries = this.eventStore.listDeliveries({ eventId: m.eventId });
     const received = deliveries.find(d => d.state === 'received');
+    const wakeNotification = this.store.webhookReceipt(m.owner,m.messageId);
     return { ...result,status: 'accepted',deliveryState: received ? 'callback_received' : m.deliveryState,
       processed: m.processedAt !== null,processingState: m.processedAt !== null ? 'processed' : 'unacknowledged',
+      ...(wakeNotification ? { wakeNotification } : {}),
       deliveries: deliveries.map(({ subscriptionId: _id,...d }) => d),
       ...(received ? { callbackReceivedAt: received.receivedAt } : {}) };
   }
@@ -124,6 +131,7 @@ export class PeerService {
       const p = this.store.unregister(owner,args.peerId,this.now());
       if (p?.subscriptionId) this.delivery.stopSubscription(p.subscriptionId,owner,'peer_unregistered');
       this.cancelUndeliverableEvents(owner);
+      this.webhookWake.cancelInvalid();
       return { status: 'unregistered',peer: this.publicPeer(p) ?? null };
     }
     if (name === 'send_peer_message') {
@@ -167,10 +175,11 @@ export class PeerService {
   }
   async subscribe(owner,params) {
     own(owner);
+    if (this.webhookWake.matches(owner,params.arguments?.peerId,params.arguments?.generation)) throw new Error('Peer has a configured webhook wake target');
     if (!this.authorizeFilter(owner,params.name,params.arguments)) throw new Error('Peer event filter is not authorized');
     const args = JSON.parse(canonicalJSON(params.arguments));
     const url = callbackURL(params.delivery?.url).href;
-    const sid = subscriptionId(owner,url,PEER_EVENT,args);
+    const sid = this.eventStore.resolveSubscriptionId(owner,url,PEER_EVENT,args);
     return this.locked(canonicalJSON([owner,args.peerId]),async () => {
       const p = this.store.getPeer(owner,args.peerId);
       const existing = this.eventStore.activeSubscriptions({ owner,name: PEER_EVENT,now: this.now() })
@@ -212,8 +221,12 @@ export class PeerService {
       }
     }
   }
-  revokeOwner(owner) { own(owner); this.ownerRevisions.set(owner,(this.ownerRevisions.get(owner) ?? 0)+1); this.store.revokeOwner(owner,this.now()); this.delivery.revokeOwner(owner); this.cancelUndeliverableEvents(owner); }
+  revokeOwner(owner) { own(owner); this.ownerRevisions.set(owner,(this.ownerRevisions.get(owner) ?? 0)+1); this.store.revokeOwner(owner,this.now()); this.delivery.revokeOwner(owner); this.cancelUndeliverableEvents(owner); this.webhookWake.cancelInvalid(); }
   async flushPending() {
+    // Webhook latency must never hold the original mailbox/native scan guard.
+    if (!this.closed && this.webhookWake.targets.length) {
+      this.webhookWake.flush().catch(() => {}).finally(() => this.schedule()).catch(() => {});
+    }
     if (this.flushPromise) return this.flushPromise;
     const action = this.flushBatch(); this.flushPromise = action;
     try { return await action; } finally { if (this.flushPromise === action) this.flushPromise = null; }
@@ -267,11 +280,12 @@ export class PeerService {
       }
       catch { this.delivery.stopSubscription(sub.id,sub.owner,'peer_binding_conflict'); }
     }
+    await this.webhookWake.ready();
     await this.flushPending();
   }
   start() { if (this.started) return; this.started = true; this.delivery.start(); this.schedule(); }
   schedule() {
-    if (!this.started || this.closed || this.timer || !this.store.pendingMessages({ limit: 1 }).length) return;
+    if (!this.started || this.closed || this.timer || (!this.store.pendingMessages({ limit: 1 }).length && !this.webhookWake.hasPending())) return;
     this.timer = setTimeout(async () => {
       this.timer = null;
       try { await this.flushPending(); } catch { /* Persistent intents remain recoverable; no new request IDs. */ }
@@ -280,7 +294,7 @@ export class PeerService {
   }
   async close() {
     if (this.closed) return; this.closed = true; this.started = false; clearTimeout(this.timer); this.timer = null;
-    await this.delivery.stop(); if (this.flushPromise) await this.flushPromise.catch(() => {});
+    await Promise.allSettled([this.webhookWake.close(),this.delivery.stop(),this.flushPromise]);
     this.eventStore.close(); this.store.close();
   }
 }

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 function request(row) {
   if (!row) return undefined;
   return { requestId: row.request_id, owner: row.owner, workspaceId: row.workspace_id,
+    ...(row.legacy_owner != null ? { legacyOwner: row.legacy_owner } : {}),
     cwd: row.cwd, routeId: row.route_id, subscriptionId: row.subscription_id,
     agentId: row.agent_id, submittedAt: row.submitted_at, state: row.state,
     turnId: row.turn_id, markerSeq: row.marker_seq, epoch: row.epoch,
@@ -45,6 +46,9 @@ export class CollaborationStore {
         message_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
         fingerprint TEXT NOT NULL, claimed_at TEXT NOT NULL
       );`);
+    if (!this.db.prepare('PRAGMA table_info(collaboration_requests)').all().some(column => column.name === 'legacy_owner')) {
+      this.db.exec('ALTER TABLE collaboration_requests ADD COLUMN legacy_owner TEXT');
+    }
   }
   get(requestId) { return request(this.db.prepare('SELECT * FROM collaboration_requests WHERE request_id=?').get(requestId)); }
   begin({ requestId, owner, workspaceId, cwd, routeId, subscriptionId, agentId, submittedAt }) {

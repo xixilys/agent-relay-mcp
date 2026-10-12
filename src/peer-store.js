@@ -39,7 +39,16 @@ export class PeerStore {
         event_recorded INTEGER NOT NULL DEFAULT 0,processed_at INTEGER,PRIMARY KEY(owner,message_id));
       CREATE UNIQUE INDEX IF NOT EXISTS peer_event_identity ON peer_messages(event_id);
       CREATE UNIQUE INDEX IF NOT EXISTS peer_single_reply ON peer_messages(owner,in_reply_to) WHERE in_reply_to IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS peer_pending ON peer_messages(delivery_state,created_at);`);
+      CREATE INDEX IF NOT EXISTS peer_pending ON peer_messages(delivery_state,created_at);
+      CREATE TABLE IF NOT EXISTS peer_webhook_bindings(owner TEXT NOT NULL,peer_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,routine_id TEXT NOT NULL,url_hash TEXT NOT NULL,
+        watermark INTEGER NOT NULL,created_at INTEGER NOT NULL,disabled_reason TEXT,PRIMARY KEY(owner,peer_id,generation));
+      CREATE TABLE IF NOT EXISTS peer_webhook_claims(owner TEXT NOT NULL,message_id TEXT NOT NULL,
+        state TEXT NOT NULL,claimed_at INTEGER NOT NULL,completed_at INTEGER,status INTEGER,reason TEXT,
+        PRIMARY KEY(owner,message_id));`);
+    if (!this.db.prepare('PRAGMA table_info(peer_webhook_bindings)').all().some(c => c.name === 'disabled_reason')) {
+      this.db.exec('ALTER TABLE peer_webhook_bindings ADD COLUMN disabled_reason TEXT');
+    }
     this.secureFiles();
   }
   secureFiles() { for (const p of [this.filename, this.filename + '-wal', this.filename + '-shm']) if (existsSync(p)) chmodSync(p, 0o600); }
@@ -171,6 +180,60 @@ export class PeerStore {
       this.db.prepare('UPDATE peer_messages SET processed_at=COALESCE(processed_at,?) WHERE owner=? AND message_id=?').run(now,owner,id);
       return this.getMessage(owner,id);
     });
+  }
+  ownerRevoked(owner) {
+    return Boolean(this.db.prepare('SELECT 1 FROM peer_owner_revocations WHERE owner=?').get(owner));
+  }
+  webhookBinding({ owner,peerId,generation }) {
+    return this.db.prepare('SELECT * FROM peer_webhook_bindings WHERE owner=? AND peer_id=? AND generation=?').get(owner,peerId,generation);
+  }
+  disableWebhook(target,reason) {
+    this.db.prepare('UPDATE peer_webhook_bindings SET disabled_reason=COALESCE(disabled_reason,?) WHERE owner=? AND peer_id=? AND generation=?')
+      .run(reason,target.owner,target.peerId,target.generation); this.secureFiles();
+  }
+  bindWebhook({ owner,peerId,generation,routineId,urlHash },now) {
+    return this.transaction(() => {
+      const p = this.getPeer(owner,peerId);
+      if (this.ownerRevoked(owner) || !p || p.state !== 'active' || p.kind === 'local' || p.generation !== generation) throw new Error('Webhook wake target is not an active authorized peer generation');
+      const old = this.db.prepare('SELECT * FROM peer_webhook_bindings WHERE owner=? AND peer_id=? AND generation=?').get(owner,peerId,generation);
+      if (old) {
+        if (old.routine_id !== routineId || old.url_hash !== urlHash) throw new Error('Webhook wake identity cannot be rebound to another routine or URL');
+        return old;
+      }
+      const watermark = this.db.prepare('SELECT COALESCE(MAX(rowid),0) AS value FROM peer_messages').get().value;
+      this.db.prepare('INSERT INTO peer_webhook_bindings(owner,peer_id,generation,routine_id,url_hash,watermark,created_at) VALUES (?,?,?,?,?,?,?)').run(owner,peerId,generation,routineId,urlHash,watermark,now);
+      return this.db.prepare('SELECT * FROM peer_webhook_bindings WHERE owner=? AND peer_id=? AND generation=?').get(owner,peerId,generation);
+    });
+  }
+  webhookCandidates({ owner,peerId,generation },limit = 1024,messageId = null) {
+    return this.db.prepare(`SELECT m.* FROM peer_messages m
+      JOIN peer_webhook_bindings b ON b.owner=m.owner AND b.peer_id=m.to_peer_id AND b.generation=m.to_generation
+      JOIN peers sender ON sender.owner=m.owner AND sender.peer_id=m.from_peer_id AND sender.state='active' AND sender.generation=m.from_generation
+      JOIN peers recipient ON recipient.owner=m.owner AND recipient.peer_id=m.to_peer_id AND recipient.state='active' AND recipient.kind!='local' AND recipient.generation=m.to_generation
+      WHERE m.owner=? AND m.to_peer_id=? AND m.to_generation=? AND m.rowid>b.watermark AND (? IS NULL OR m.message_id=?)
+        AND b.disabled_reason IS NULL AND m.processed_at IS NULL AND m.delivery_state!='cancelled'
+        AND NOT EXISTS(SELECT 1 FROM peer_owner_revocations r WHERE r.owner=m.owner)
+        AND NOT EXISTS(SELECT 1 FROM peer_webhook_claims c WHERE c.owner=m.owner AND c.message_id=m.message_id)
+      ORDER BY m.rowid LIMIT ?`).all(owner,peerId,generation,messageId,messageId,limit).map(message);
+  }
+  claimWebhook(target,id,now) {
+    return this.transaction(() => {
+      // Recheck all eligibility in the same transaction as the unique claim.
+      const m = this.webhookCandidates(target,1,id)[0];
+      if (!m) return undefined;
+      this.db.prepare("INSERT INTO peer_webhook_claims(owner,message_id,state,claimed_at) VALUES (?,?,'claimed',?)").run(m.owner,id,now);
+      return m;
+    });
+  }
+  recoverWebhookClaims(now) {
+    this.db.prepare("UPDATE peer_webhook_claims SET state='unknown',reason='restart_inflight',completed_at=? WHERE state='claimed'").run(now); this.secureFiles();
+  }
+  finishWebhook(owner,id,{ state,status = null,reason = null },now) {
+    this.db.prepare("UPDATE peer_webhook_claims SET state=?,status=?,reason=?,completed_at=? WHERE owner=? AND message_id=? AND state='claimed'").run(state,status,reason,now,owner,id); this.secureFiles();
+  }
+  webhookReceipt(owner,id) {
+    const r = this.db.prepare('SELECT state,claimed_at,completed_at,status,reason FROM peer_webhook_claims WHERE owner=? AND message_id=?').get(owner,id);
+    return r && { state: r.state,claimedAt: r.claimed_at,completedAt: r.completed_at,status: r.status,reason: r.reason };
   }
   close() { this.db.close(); }
 }

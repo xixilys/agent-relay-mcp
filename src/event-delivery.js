@@ -4,7 +4,7 @@ import { isIP } from 'node:net';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import ipaddr from 'ipaddr.js';
 import { Webhook } from 'standardwebhooks';
-import { canonicalJSON, subscriptionId } from './event-store.js';
+import { canonicalJSON } from './event-store.js';
 
 const DAY_MS = 86_400_000;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -205,7 +205,7 @@ export class EventDelivery {
     }
     // Capture an immutable filter before any asynchronous validation or callback.
     args = JSON.parse(canonicalJSON(args));
-    const id = subscriptionId(owner, url, name, args);
+    const id = this.store.resolveSubscriptionId(owner, url, name, args);
     const revision = this.revisions.get(id) ?? 0;
     const ownerRevision = this.ownerRevisions.get(owner) ?? 0;
     const cancelled = () => (this.revisions.get(id) ?? 0) !== revision ||
@@ -270,7 +270,7 @@ export class EventDelivery {
     identityInputs(name, args, owner);
     if (!delivery || delivery.mode !== 'webhook') throw new TypeError('Only webhook delivery is supported');
     const url = callbackURL(delivery.url).href;
-    const id = subscriptionId(owner, url, name, args);
+    const id = this.store.resolveSubscriptionId(owner, url, name, args);
     this.stopSubscription(id, owner);
     return {};
   }

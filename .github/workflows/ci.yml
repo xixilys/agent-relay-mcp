@@ -19,3 +19,4 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+      - run: python3 -m unittest discover -s test -p '*_test.py'

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
-  <title id="title">Dot GPT Local Agents MCP</title>
-  <desc id="desc">One OAuth-protected gateway for Paseo agents on Mac and SSH hosts.</desc>
+  <title id="title">Agent Relay MCP</title>
+  <desc id="desc">One OAuth-protected gateway for trusted clients, shared mailboxes and Paseo agents on Mac and SSH hosts.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#07182d"/>
@@ -28,9 +28,9 @@
   <rect x="844" y="122" width="126" height="56" rx="15" fill="#102d43" stroke="url(#accent)" stroke-width="2"/>
   <circle cx="868" cy="150" r="7" fill="#5eead4"/>
   <text x="884" y="155" fill="#effafa" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="16" font-weight="700">MCP</text>
-  <text x="72" y="91" fill="#99f6e4" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="14" font-weight="750" letter-spacing="3">DOT  ×  PASEO</text>
-  <text x="68" y="151" fill="#f1f8ff" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="38" font-weight="750">Local Agents MCP</text>
+  <text x="72" y="91" fill="#99f6e4" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="14" font-weight="750" letter-spacing="3">TRUSTED CLIENTS  ×  PASEO</text>
+  <text x="68" y="151" fill="#f1f8ff" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="38" font-weight="750">Agent Relay MCP</text>
   <rect x="72" y="178" width="94" height="4" rx="2" fill="url(#accent)"/>
-  <text x="72" y="220" fill="#bdd3e5" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="19">One gateway. Multiple hosts. Clear ownership.</text>
-  <text x="72" y="255" fill="#86a6bd" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13" letter-spacing="1.4">OAUTH-PROTECTED  ·  HOST-LOCAL WORK  ·  PRIVATE SSH BRIDGE</text>
+  <text x="72" y="220" fill="#bdd3e5" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="19">Shared mailboxes. Multiple hosts. Connected agents.</text>
+  <text x="72" y="255" fill="#86a6bd" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif" font-size="13" letter-spacing="1.4">OAUTH-PROTECTED  ·  EVENTS / WEBHOOK WAKE  ·  PRIVATE SSH BRIDGE</text>
 </svg>

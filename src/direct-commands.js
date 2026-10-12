@@ -78,6 +78,9 @@ export class DirectCommands {
           command_id TEXT NOT NULL, input_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
           state TEXT NOT NULL, eof INTEGER NOT NULL, PRIMARY KEY(command_id,input_id)
         );`);
+      if (!this.db.prepare('PRAGMA table_info(direct_commands)').all().some(column => column.name === 'legacy_owner')) {
+        this.db.exec('ALTER TABLE direct_commands ADD COLUMN legacy_owner TEXT');
+      }
       this.db.prepare("UPDATE direct_commands SET state=CASE WHEN state='running' THEN 'interrupted' ELSE 'unknown' END,updated_at=? WHERE state IN ('pending','running') AND host_id=?")
         .run(new Date().toISOString(), host.id);
       this.db.prepare("UPDATE direct_inputs SET state='unknown' WHERE state='sending'").run();
@@ -127,7 +130,10 @@ export class DirectCommands {
     const fingerprint = hash({ owner, hostId: this.host.id, projectId: project.id, argv, cwd, timeoutMs });
     const old = this.db.prepare('SELECT * FROM direct_commands WHERE request_id=?').get(args.requestId);
     if (old) {
-      if (old.owner !== owner || old.host_id !== this.host.id || old.fingerprint !== fingerprint) throw safe('requestId already belongs to different command parameters or owner');
+      // A deliberate shared-owner migration preserves the original fingerprint.
+      // Use its recorded former owner only for content comparison, never access.
+      const expected = old.legacy_owner ? hash({ owner: old.legacy_owner, hostId: this.host.id, projectId: project.id, argv, cwd, timeoutMs }) : fingerprint;
+      if (old.owner !== owner || old.host_id !== this.host.id || old.fingerprint !== expected) throw safe('requestId already belongs to different command parameters or owner');
       return this.receipt(old, true);
     }
     if ([...this.runtime.values()].filter(r => ACTIVE.has(r.state)).length >= 16) throw safe('Too many active Direct commands');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createModernHandler, isModernRequest, MODERN_PROTOCOL_VERSION } from '../src/protocol-server.js';
 import { CallbackEndpointError, EventDelivery } from '../src/event-delivery.js';
+import { subscriptionId } from '../src/event-store.js';
 
 const protocolKey = 'io.modelcontextprotocol/protocolVersion';
 const capabilitiesKey = 'io.modelcontextprotocol/clientCapabilities';
@@ -290,7 +291,7 @@ test('a failed actual EventDelivery challenge reaches the HTTP client as -32015'
   let attemptedVerification = false;
   let saved = false;
   const delivery = new EventDelivery({
-    store: { isVerified: () => false, saveSubscription: () => { saved = true; } },
+    store: { resolveSubscriptionId: subscriptionId, isVerified: () => false, saveSubscription: () => { saved = true; } },
     callbackClient: { async post(_url, { body, headers }) {
       const payload = JSON.parse(body);
       assert.equal(payload.type, 'verification');

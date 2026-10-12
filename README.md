@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="Dot GPT Local Agents MCP — one gateway, multiple Paseo hosts" width="100%">
+  <img src="docs/assets/banner.svg" alt="Agent Relay MCP — one gateway, multiple Paseo hosts" width="100%">
 </p>
 
 <p align="center">
@@ -8,11 +8,11 @@
 
 <p align="center">
   <a href="NOTICE"><img alt="MIT and Apache-2.0 licenses" src="https://img.shields.io/badge/licenses-MIT%20%2B%20Apache--2.0-14b8a6.svg"></a>
-  <a href="https://github.com/xixilys/dot-gpt-local-agents-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/xixilys/dot-gpt-local-agents-mcp/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/xixilys/agent-relay-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/xixilys/agent-relay-mcp/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Node.js 22.19–26" src="https://img.shields.io/badge/Node.js-22.19%E2%80%9326-2563eb.svg">
 </p>
 
-**One OAuth-protected MCP endpoint for Paseo agents, owner-scoped peer mailboxes, and project-scoped Direct files and commands across your Mac and SSH-reachable Linux/WSL hosts.** Discover hosts, choose where work runs, and read its receipts and events from the same client connection.
+**Agent Relay MCP connects trusted clients—dot, ChatGPT, Grok Bot, and native agents—to Paseo agents, peer mailboxes, and Direct files, commands, and binary transfers across Mac and SSH-reachable Linux/WSL hosts.** One self-hosted OAuth-protected endpoint can share access across your clients and wake recipients through the notification mechanism they support.
 
 This self-hosted gateway is for one trusted owner. Agents execute on their selected host with that host's Paseo installation and runtime permissions. The gateway does not provide model accounts, a hosted service, or an operating-system sandbox.
 
@@ -22,7 +22,8 @@ This self-hosted gateway is for one trusted owner. Agents execute on their selec
 
 - **One endpoint, explicit host selection.** `list_hosts` reports each configured `hostId`, name, and availability. Host-routed tools accept `hostId`; when omitted, calls keep their legacy Mac behavior. Include it for remote calls and later event or receipt reads. Peer mailbox send/read/ACK calls use the owner-wide directory; local peer registration uses `hostId` to bind an agent.
 - **Host-local work and history.** Projects, workspaces, agents, task receipts, and host callbacks belong to one host. IDs are not guessed or looked up across machines. Peer identities and messages instead share one authenticated owner's directory across configured hosts.
-- **Mailboxes for chats, dot, and native agents.** Register stable peer IDs, discover recipients, and exchange messages with linked replies and ACKs. Chats check mail manually; busy native agents receive queued messages when idle. Retained history no longer blocks new mail at a cumulative message-count limit.
+- **Shared access for your trusted clients.** With `sharedOwner: true`, authenticated clients share peer mailboxes, existing agent tasks, and Direct commands/files/transfers. OAuth authentication and per-client token revocation remain active. Omit this option or set it to `false` to keep the original per-OAuth-client authority domains.
+- **Mailbox notifications matched to client capabilities.** Register stable peer IDs, send linked replies, and ACK processed mail. Native agents receive queued mail when idle; Events-capable clients can subscribe to `peer.message`; Grok Bot can use its official Webhook routine. Clients without either callback capability check mail manually. Retained history does not block new mail at a cumulative message-count limit.
 - **Existing Paseo stays in charge.** The gateway connects to the Mac Paseo instance and configured SSH hosts. It does not inherit hosts from the Paseo desktop UI, install Paseo remotely, start its daemon, or change providers or credentials.
 - **Remote messages return to the Mac gateway.** A fixed CLI on the remote host reaches that host's dedicated Mac-side channel through a reverse SSH Unix-socket forward. The Mac gateway persists messages centrally; no public message endpoint is added.
 
@@ -31,8 +32,8 @@ This self-hosted gateway is for one trusted owner. Agents execute on their selec
 The example below is a shape guide for the 0.6.0 multi-host configuration. Replace every example path and host value with values you control. The Mac is implicit; list only additional remote hosts.
 
 ```sh
-git clone https://github.com/xixilys/dot-gpt-local-agents-mcp.git
-cd dot-gpt-local-agents-mcp
+git clone https://github.com/xixilys/agent-relay-mcp.git
+cd agent-relay-mcp
 npm ci --ignore-scripts
 cp config.example.json config.json
 ```
@@ -43,6 +44,7 @@ Configure one OAuth gateway and your hosts. Keep the existing Mac settings as to
 {
   "publicBaseUrl": "https://gateway.example.com",
   "port": 6768,
+  "sharedOwner": true,
   "upstreamUrl": "http://127.0.0.1:6767/mcp/agents",
   "stateDir": "/Users/you/.local/share/local-agents-mcp",
   "ownerTokenFile": "/Users/you/.local/share/local-agents-mcp/owner.json",
@@ -73,7 +75,7 @@ npm start
 
 Run one gateway for the configured port and state. Put an HTTPS reverse proxy in front of the gateway at `127.0.0.1:6768`, preserve authorization and MCP headers, and connect a compatible client to `https://<your-origin>/mcp`. TLS, proxy limits, service management, and client registration are operator responsibilities. Keep Paseo's loopback endpoint private. The repository does not provision a tunnel or change firewall rules.
 
-OAuth clients are dynamically registered. Authorization uses the `local-agents` scope, S256 PKCE, and the exact MCP resource URL (`https://<your-origin>/mcp`). Access tokens last one hour and refresh tokens 30 days. Redirects allow `chatgpt.com`, `chat.openai.com`, and loopback hosts (`localhost`, `127.0.0.1`, `::1`); other redirect hosts require a deliberate source change. Apply proxy rate limits to registration and consent endpoints before exposing the service.
+OAuth clients are dynamically registered. Authorization uses the `local-agents` scope, S256 PKCE, and the exact MCP resource URL (`https://<your-origin>/mcp`). Access tokens last one hour and refresh tokens 30 days. Redirects allow `chatgpt.com`, `chat.openai.com`, `www.cursor.com`, and loopback hosts (`localhost`, `127.0.0.1`, `::1`); other redirect hosts require a deliberate source change. Apply proxy rate limits to registration and consent endpoints before exposing the service.
 
 <details>
 <summary>Owner password file example</summary>
@@ -96,6 +98,99 @@ NODE
 ```
 
 </details>
+
+## Shared access and mailbox wake
+
+The fresh-install example enables `sharedOwner: true` for a single user’s trusted clients. This setting uses `local-owner:shared` for all authenticated OAuth clients, including peer directories, existing agent tasks, Direct commands, files and transfer receipts. It does not relax OAuth verification, native agent capabilities, project permissions or existing task authorization. Revoking one client’s tokens leaves other clients’ shared resources available. Without this setting, the original `local-owner:<clientId>` domains remain separate.
+
+### Upgrade an existing installation
+
+Stop the gateway using its existing service manager before migrating; do not run migration against a live state directory. Resolve any in-flight Direct commands, binary transfers or native peer deliveries first. Save the old private configuration and wake bindings separately, then run from the repository with the actual state directory and a new backup directory:
+
+```sh
+python3 scripts/migrate-shared-owner.py \
+  --state-dir /Users/you/.local/share/local-agents-mcp \
+  --backup-dir /Users/you/.local/share/agent-relay-migration-backup \
+  --apply
+```
+
+After successful migration, set `sharedOwner: true` in `config.json`, change the `owner` of any private `peerWakeTargets` entry to `local-owner:shared`, and start one gateway. Check `list_hosts`, `list_peers` and the original receipts from each client. Existing subscription IDs, message text and processing state, receipt history, legacy agent revocations, and Webhook watermarks/claims are preserved; unknown operations are not resent. Conflicting live/bound peer identities or message IDs stop migration; conflicting stopped, unbound peer names may receive an archive suffix. The script does not change OAuth credentials or start agents.
+
+Backups contain private state and must remain outside Git. If migration fails, keep the gateway stopped and restore every backed-up database/receipt file before restarting with the saved configuration. Once shared mode has received new data, restoring an older backup can lose it; simply toggling the option back does not migrate shared history into separate client domains.
+
+### Select the recipient’s notification path
+
+| Recipient capability | Setup | What to verify |
+| --- | --- | --- |
+| Native Paseo agent | Register `kind: "local"` with its existing owned `hostId` and `agentId`. | Busy mail queues until idle; inspect the original message and actual agent result. |
+| MCP Events client, including a compatible dot conversation | Register a peer, then call `events/subscribe` in that recipient conversation for `peer.message`, with `arguments: {"peerId":"dot","generation":1}` using its actual ID/generation and the platform-provided callback/signing secret. | Keep unrelated `agent.attention` subscriptions. Confirm the recipient reads the original mail without another user prompt. |
+| Grok Bot with an official Webhook routine | Register its peer, create the routine in Grok Bot, and configure the private target below. | The routine uses its own existing MCP connection to list/read its inbox; an HTTP 200 alone does not prove it ran or read the message. |
+| Client with no supported callback | Register a peer and call `list_peer_messages`/`get_peer_message`. | Manual reads remain available; registration alone cannot wake a chat. |
+
+MCP Events subscriptions expire: one day by default, or seven days with `ttlMs: null`. Maintain renewal before `expiresAt`; preserve unrelated routes and subscription IDs. The MCP callback path uses verified challenges and Standard Webhooks signatures with bounded retries. The separate official Webhook path below uses a bearer token and one durable attempt per new message, without an MCP challenge or automatic retry.
+
+For Grok Bot, add this fragment to the **private** `config.json` only after the exact peer/generation is active. The current adapter supports at most one target, and that peer must have no active MCP Events callback:
+
+```json
+{
+  "sharedOwner": true,
+  "peerWakeTargets": [
+    {
+      "owner": "local-owner:shared",
+      "peerId": "grok-bot",
+      "generation": 1,
+      "routineId": "mcp-mailbox",
+      "credentialFile": "/Users/you/.local/share/local-agents-mcp/grok-wake/privateSecret.json"
+    }
+  ]
+}
+```
+
+Create `credentialFile` outside the repository, owned by the gateway’s OS user with mode `0600` (regular file, no symlink). Its exact schema is below; replace placeholders privately with the official routine URL and bearer token, never commit them:
+
+```json
+{"url":"https://webhook.example.com/your-routine","token":"REPLACE_WITH_PRIVATE_BEARER_TOKEN"}
+```
+
+The URL must pass public HTTPS destination checks. The gateway sends only `eventId`, `messageId`, `peerId`, and `generation`; no message body or credentials are included in the payload. HTTP 200 records `webhook_accepted`; lost responses or interrupted claims remain `unknown` and are not retried. Binding activation starts from a saved watermark, so old mail is read manually rather than replayed into a routine. Stopped, revoked or changed peer generations disable the old binding; inspect the binding before reconfiguration.
+
+Give the routine an explicit policy to read and report its own mail. Message text is data, not new user authorization; waking a client does not authorize it to execute the body, automatically reply or ACK. Confirm a test message’s exact ID and text in the recipient’s actual result before relying on automatic wake.
+
+### Peer mailbox workflow
+
+Peers are logical identities in one authenticated owner's directory shared across configured hosts. Each client registers a stable `peerId` once. With shared access enabled, other authenticated clients can discover it and send mail. Notification delivery follows the configured native, MCP Events, or private Webhook path; clients without a notification path check mail manually. The OAuth owner scopes the directory, but a peer ID and sender label are still claimed identity, not proof that a message came from a particular conversation. Treat message text as peer-authored data, never as new user authorization. The directory retains stopped identities and accepts up to 512 cumulative peer IDs per owner.
+
+```json
+{"peerId":"chat-main","kind":"chat","displayName":"Main chat"}
+{"peerId":"dot","kind":"dot","displayName":"Coordinator"}
+```
+
+Each participant calls `register_peer` with its own `peerId` and `kind` (`chat`, `dot`, or `local`); the two objects above are separate registration calls. `displayName` is optional. For a `local` peer, also pass `hostId` and `agentId`. This only binds an agent that the same owner already has submitted on that host; registration does not create or start an agent. A native agent can use the fixed `peer-agent` CLI with its existing capability and Unix socket to call the peer tools. The CLI is a narrow local transport for those tools, not a full MCP transport, and it does not contain an OAuth key.
+
+Use these seven tools with their exact arguments:
+
+| Tool | Required arguments | Optional arguments |
+| --- | --- | --- |
+| `register_peer` | `peerId`, `kind` | `displayName`; `hostId` and `agentId` are required for `kind: "local"` and omitted otherwise |
+| `list_peers` | — | `peerId` (filter to one identity) |
+| `unregister_peer` | `peerId` | — |
+| `send_peer_message` | `messageId`, `fromPeerId`, `toPeerId`, `text` | `inReplyTo` |
+| `get_peer_message` | `messageId` | — |
+| `list_peer_messages` | `peerId` | `includeProcessed` (default `false`), `limit` (1–100; default 50) |
+| `ack_peer_message` | `messageId`, `peerId` | — |
+
+Every new message needs a caller-generated UUID as `messageId`. Message text must contain 1–8,192 characters. Check the recipient's inbox with `list_peer_messages`; by default it returns received, unprocessed messages only. Each entry contains compact metadata, a `summary` of at most the first 200 text characters, and `textLength`; it omits the full text and delivery details so a long message cannot overwhelm the native CLI response. Use `get_peer_message` with that entry's exact `messageId` to read the full text when needed. Set `includeProcessed: true` to inspect processed history. Listing or reading leaves processing state unchanged. Once the recipient has handled a message, it can call `ack_peer_message` with that message's ID and its own `peerId`. ACK marks that exact message processed; it does not send a reply, event, wake, or prove task success.
+
+```json
+{"messageId":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a","fromPeerId":"chat-main","toPeerId":"dot","text":"Please review the draft."}
+{"peerId":"dot"}
+{"messageId":"a0ebd6ce-e25f-4e14-88de-12e2c6cf6277","fromPeerId":"dot","toPeerId":"chat-main","text":"I reviewed it; see the notes.","inReplyTo":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a"}
+```
+
+A reply reverses the original sender and recipient and sets `inReplyTo` to the original message UUID. Each message can have at most one reply, and a conversation is limited to eight hops. If a send outcome is uncertain, call `get_peer_message` with the exact original `messageId`; an unknown result is not a reason to resend with a new ID.
+
+For local agents, busy delivery is queued and submitted when the agent becomes idle. The fixed `peer-agent` CLI has a 15-second default network timeout. A native registration and inbox are limited to that owner and the agent's current peer generation. Check for mail when a task starts, at stage completion, and when the agent becomes idle. Do not create automatic acknowledgements or reply loops; act only within the authority already granted to that agent.
+
 
 ## Choose a host and follow a task
 
@@ -160,46 +255,9 @@ The legacy tools transport and the `2026-07-28` MCP Events adapter share `/mcp`.
 
 For remote tasks, the fixed message CLI runs on the remote host and reaches that host's dedicated channel on the Mac gateway through a reverse SSH Unix-socket forward. The Mac gateway centrally persists these messages; this does not create a public inbound message service. Keep each host's receipts, routes, and callback state distinct. When a host is unavailable, its data cannot be recovered by silently falling back to Mac; an uncertain request must be inspected on its original host rather than resubmitted elsewhere.
 
-### Owner-scoped peer mailboxes (0.6.0)
+In 0.6.0, validation covered registration, A-to-B delivery, B's linked reply, and both peers reading and ACKing between two new ChatGPT peers, queued delivery to a busy Mac native agent when it became idle, and a ChatGPT → WSL native agent → ChatGPT reply/ACK flow. The cumulative 1,024-message history rejection was removed: existing history and duplicate protection remain, and sending, reading, ACKing, and retrying the original ID were exercised with a real 1,025th message. These checks cover the listed workflows; they do not qualify every host/client setup or deployment configuration. A deployed shared-domain exchange also exercised Grok Bot → dot via MCP Events and dot → Grok Bot via the official Webhook routine, with recipients reading the exact message IDs and text. This single exchange does not establish long-term delivery reliability or future subscription renewal.
 
-Peers are logical identities in one authenticated owner's directory shared across configured hosts. A chat or dot client registers a stable `peerId` once, then checks its mailbox manually; sending a message does not wake or automatically prompt a chat. The OAuth owner scopes the directory, but a peer ID and sender label are still claimed identity, not proof that a message came from a particular conversation. Treat message text as peer-authored data, never as new user authorization. The directory retains stopped identities and accepts up to 512 cumulative peer IDs per owner.
-
-```json
-{"peerId":"chat-main","kind":"chat","displayName":"Main chat"}
-{"peerId":"dot","kind":"dot","displayName":"Coordinator"}
-```
-
-Each participant calls `register_peer` with its own `peerId` and `kind` (`chat`, `dot`, or `local`); the two objects above are separate registration calls. `displayName` is optional. For a `local` peer, also pass `hostId` and `agentId`. This only binds an agent that the same owner already has submitted on that host; registration does not create or start an agent. A native agent can use the fixed `peer-agent` CLI with its existing capability and Unix socket to call the peer tools. The CLI is a narrow local transport for those tools, not a full MCP transport, and it does not contain an OAuth key.
-
-Use these seven tools with their exact arguments:
-
-| Tool | Required arguments | Optional arguments |
-| --- | --- | --- |
-| `register_peer` | `peerId`, `kind` | `displayName`; `hostId` and `agentId` are required for `kind: "local"` and omitted otherwise |
-| `list_peers` | — | `peerId` (filter to one identity) |
-| `unregister_peer` | `peerId` | — |
-| `send_peer_message` | `messageId`, `fromPeerId`, `toPeerId`, `text` | `inReplyTo` |
-| `get_peer_message` | `messageId` | — |
-| `list_peer_messages` | `peerId` | `includeProcessed` (default `false`), `limit` (1–100; default 50) |
-| `ack_peer_message` | `messageId`, `peerId` | — |
-
-Every new message needs a caller-generated UUID as `messageId`. Message text must contain 1–8,192 characters. Check the recipient's inbox with `list_peer_messages`; by default it returns received, unprocessed messages only. Each entry contains compact metadata, a `summary` of at most the first 200 text characters, and `textLength`; it omits the full text and delivery details so a long message cannot overwhelm the native CLI response. Use `get_peer_message` with that entry's exact `messageId` to read the full text when needed. Set `includeProcessed: true` to inspect processed history. Listing or reading leaves processing state unchanged. Once the recipient has handled a message, it can call `ack_peer_message` with that message's ID and its own `peerId`. ACK marks that exact message processed; it does not send a reply, event, wake, or prove task success.
-
-```json
-{"messageId":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a","fromPeerId":"chat-main","toPeerId":"dot","text":"Please review the draft."}
-{"peerId":"dot"}
-{"messageId":"a0ebd6ce-e25f-4e14-88de-12e2c6cf6277","fromPeerId":"dot","toPeerId":"chat-main","text":"I reviewed it; see the notes.","inReplyTo":"b0bd3f0e-08d7-4bf6-9764-58e8ef83f85a"}
-```
-
-A reply reverses the original sender and recipient and sets `inReplyTo` to the original message UUID. Each message can have at most one reply, and a conversation is limited to eight hops. If a send outcome is uncertain, call `get_peer_message` with the exact original `messageId`; an unknown result is not a reason to resend with a new ID.
-
-For local agents, busy delivery is queued and submitted when the agent becomes idle. The fixed `peer-agent` CLI has a 15-second default network timeout. A native registration and inbox are limited to that owner and the agent's current peer generation. Check for mail when a task starts, at stage completion, and when the agent becomes idle. Do not create automatic acknowledgements or reply loops; act only within the authority already granted to that agent.
-
-Callbacks are an explicit optional delivery path for WorkCloud/dot clients that support Events. Bind a peer to an Events subscription deliberately; ordinary chat clients are not guaranteed to support Events or to wake on a callback. Even a successful delivery receipt only records delivery at that layer, not that a chat read or acted on the message. Mailbox polling remains the manual default.
-
-In 0.6.0, validation covered registration, A-to-B delivery, B's linked reply, and both peers reading and ACKing between two new ChatGPT peers, queued delivery to a busy Mac native agent when it became idle, and a ChatGPT → WSL native agent → ChatGPT reply/ACK flow. The cumulative 1,024-message history rejection was removed: existing history and duplicate protection remain, and sending, reading, ACKing, and retrying the original ID were exercised with a real 1,025th message. These checks cover the listed workflows; they do not qualify every host/client setup or deployment configuration.
-
-Callbacks require HTTPS, verified challenges, public DNS/IP destinations, and Standard Webhooks signatures. Delivery checks resolved addresses, rejects redirects and private/local destinations, and uses a durable outbox with up to five attempts for transient errors; delivery stops on HTTP 410. Subscriptions last one day by default (`ttlMs: null` selects seven days); refresh them before expiry. Cursor replay is not implemented (`cursor: null`); recover exact results through read tools. Unsubscribe when monitoring ends, preserving unrelated routes.
+MCP Events callbacks require HTTPS, verified challenges, public DNS/IP destinations, and Standard Webhooks signatures. Delivery checks resolved addresses, rejects redirects and private/local destinations, and uses a durable outbox with up to five attempts for transient errors; delivery stops on HTTP 410. Subscriptions last one day by default (`ttlMs: null` selects seven days); refresh them before expiry. Cursor replay is not implemented (`cursor: null`); recover exact results through read tools. Unsubscribe when monitoring ends, preserving unrelated routes.
 
 ## Security and data
 
@@ -215,6 +273,7 @@ The public source snapshot excludes production configuration, runtime databases,
 npm ci --ignore-scripts
 npm run check
 npm test
+python3 -m unittest discover -s test -p '*_test.py'
 ```
 
 The scoped override pins `@waishnav/devspace`'s SQLite dependency to `better-sqlite3` 13.0.3 and its Node-API prebuilds, avoiding an unnecessary source rebuild on supported platforms; see the [official 13.0.0 release notes](https://github.com/WiseLibs/better-sqlite3/releases/tag/v13.0.0). CI runs syntax checks and the repository's behavior/security tests on Node.js 22.19 and 24. A green host availability result confirms that a configured Paseo daemon responds; it does not certify every task, message, or event flow. Verify the client and workflows you rely on in your deployment environment.

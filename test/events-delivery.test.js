@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { Webhook } from 'standardwebhooks';
-import { EventStore } from '../src/event-store.js';
+import { EventStore, subscriptionId } from '../src/event-store.js';
 import { EventDelivery, SafeCallbackClient, CallbackEndpointError, isPublicAddress } from '../src/event-delivery.js';
 
 const secret = `whsec_${Buffer.alloc(32, 65).toString('base64')}`;
@@ -14,6 +14,35 @@ const secondSecret = `whsec_${Buffer.alloc(32, 66).toString('base64')}`;
 const destination = { mode: 'webhook', url: 'https://callback.example/events', secret };
 const args = { workspaceId: 'wks_test', routeId: 'route_test' };
 const eventName = 'agent.attention';
+
+test('owner migration renews and unsubscribes the original subscription ID and retains delivery evidence', async t => {
+  const f = await setup(t);
+  const original = await f.subscribe();
+  f.publish('migration-event');
+  f.store.db.prepare('UPDATE event_subscriptions SET owner=? WHERE id=?').run('local-owner:shared', original.id);
+  f.store.db.prepare('UPDATE event_subscriptions SET expires_at=? WHERE id=?').run(f.now() - 1, original.id);
+  const renewed = await f.subscribe({}, { routeId: args.routeId, workspaceId: args.workspaceId }, 'local-owner:shared');
+  assert.equal(renewed.id, original.id);
+  assert.notEqual(renewed.id, subscriptionId('local-owner:shared', destination.url, eventName, args));
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM event_subscriptions').get().n, 1);
+  assert.equal(f.store.listDeliveries()[0].subscriptionId, original.id);
+  f.delivery.unsubscribe(eventName, args, destination, 'local-owner:shared');
+  assert.equal(f.store.getSubscriptionInternal(original.id).state, 'stopped');
+  assert.equal(f.store.listDeliveries()[0].state, 'cancelled');
+  assert.equal((await f.subscribe({}, args, 'local-owner:shared')).id, original.id);
+});
+
+test('ambiguous migrated identities fail without choosing a subscription or writing a duplicate', async t => {
+  const f = await setup(t);
+  const first = await f.subscribe();
+  const second = await f.subscribe({}, args, 'another-owner');
+  f.store.db.prepare('UPDATE event_subscriptions SET owner=?').run('local-owner:shared');
+  await assert.rejects(f.subscribe({}, args, 'local-owner:shared'), /Conflicting event subscription/);
+  assert.throws(() => f.delivery.unsubscribe(eventName, args, destination, 'local-owner:shared'), /Conflicting event subscription/);
+  assert.deepEqual(f.store.activeSubscriptions().map(s => s.id).sort(), [first.id, second.id].sort());
+  assert.notEqual(f.store.resolveSubscriptionId('local-owner:shared', 'https://callback.example/other', eventName, args), first.id);
+  assert.notEqual(f.store.resolveSubscriptionId('unrelated-owner', destination.url, eventName, args), first.id);
+});
 
 async function setup(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'local-events-test-'));

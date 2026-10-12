@@ -16,7 +16,12 @@ export function createPeerNative({ contexts,getPeers }) {
   const service = () => { const peers = getPeers(); if (!peers?.store) denied(); return peers; };
   const hasEndpoint = (peers,owner,hostId,agentId) => peers.store.listPeers(owner)
     .some(peer => peer.kind === 'local' && peer.binding?.hostId === hostId && peer.binding?.agentId === agentId);
-  const requestAuthorized = (peers,record) => peers.store.nativeRequestAuthorized?.(record.owner,record.submittedAt) === true;
+  const requestAuthorized = (peers,record) => {
+    // Moving a receipt into a shared domain does not restore a revoked helper.
+    // Also retain a future explicit shared-domain revocation's authority.
+    const authorized = owner => peers.store.nativeRequestAuthorized?.(owner,record.submittedAt) === true;
+    return authorized(record.legacyOwner ?? record.owner) && authorized(record.owner);
+  };
 
   function ownedRequest(context,requestId,agentId,owner) {
     const record = context.collaboration.store.get(requestId),receipt = context.store.get(requestId);

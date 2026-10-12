@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createPeerNative } from '../src/peer-native.js';
 import { PeerService } from '../src/peer-service.js';
+import { CollaborationStore } from '../src/collaboration-store.js';
 import { jsonResult } from '../src/gateway.js';
 
 async function fixture(t,{ register = true,remote = false } = {}) {
@@ -228,6 +229,57 @@ test('revoked owner with no prior endpoint cannot use its old capability to self
   assert.equal((await f.call('register_peer',{ peerId: 'local' },actor)).isError,true);
   assert.equal((await f.call('list_peers',{},actor)).isError,true);
   assert.equal(reopened.nativePeer(f.owner,'mac',f.agentId),undefined);
+});
+
+for (const revoked of [true,false]) test(`migrated no-endpoint helper preserves legacy owner revocation=${revoked} across restart`,async t => {
+  const f = await fixture(t,{ register: false });
+  const stateDir = join(f.dir,'migrated-collaboration');
+  let saved = new CollaborationStore(stateDir);
+  t.after(() => saved.close());
+  const original = f.records.get(f.binding.requestId);
+  saved.begin({ ...original }); saved.submitted(original.requestId,'submitted',f.agentId);
+  assert.equal(Object.hasOwn(saved.get(original.requestId),'legacyOwner'),false);
+  if (revoked) f.peers.store.revokeOwner(f.owner,Date.parse('2026-10-09T00:01:00Z'));
+  else f.peers.store.revokeOwner('another-legacy-owner',Date.parse('2026-10-09T00:01:00Z'));
+  saved.db.prepare('UPDATE collaboration_requests SET legacy_owner=COALESCE(legacy_owner,owner),owner=?')
+    .run('local-owner:shared');
+  f.context.collaboration.store = saved;
+  const expectedActor = { owner: 'local-owner:shared',hostId: 'mac',agentId: f.agentId };
+  assert.equal(saved.get(original.requestId).legacyOwner,f.owner);
+  for (const restart of [false,true]) {
+    if (restart) {
+      await f.restart(); saved.close(); saved = new CollaborationStore(stateDir);
+      f.context.collaboration.store = saved;
+      assert.equal(saved.get(original.requestId).legacyOwner,f.owner);
+    }
+    const actor = await f.native.verifyPeer('mac',f.agentId,{ requestId: f.binding.requestId });
+    if (revoked) {
+      assert.equal(actor,false);
+      const call = await f.call('register_peer',{ peerId: 'local' },expectedActor);
+      assert.equal(call.isError,true);
+      assert.equal(f.context.collaboration.store.get(original.requestId).owner,'local-owner:shared');
+      assert.equal(f.state.issues.length,0);
+    } else assert.deepEqual(actor,expectedActor);
+  }
+  if (!revoked) {
+    const registered = await f.call('register_peer',{ peerId: 'local' },expectedActor);
+    assert.equal(registered.isError,undefined);
+    assert.equal(registered.structuredContent.state,'active');
+    assert.equal((await f.native.verifyPeer('mac',f.agentId,{ requestId: f.binding.requestId })).peerId,'local');
+  }
+});
+
+test('migrated helper also observes a new explicit shared-domain revocation',async t => {
+  const f = await fixture(t,{ register: false });
+  const record = f.records.get(f.binding.requestId);
+  record.legacyOwner = record.owner; record.owner = 'local-owner:shared';
+  const actor = await f.native.verifyPeer('mac',f.agentId,{ requestId: f.binding.requestId });
+  assert.equal(actor.owner,'local-owner:shared');
+  f.peers.store.revokeOwner('local-owner:shared',Date.parse('2026-10-09T00:01:00Z'));
+  assert.equal(await f.native.verifyPeer('mac',f.agentId,{ requestId: f.binding.requestId }),false);
+  assert.equal((await f.call('register_peer',{ peerId: 'local' },actor)).isError,true);
+  await f.restart();
+  assert.equal(await f.native.verifyPeer('mac',f.agentId,{ requestId: f.binding.requestId }),false);
 });
 
 test('no-peer actor checks last owned nonpeer request at call time; explicit OAuth rebind remains usable',async t => {
