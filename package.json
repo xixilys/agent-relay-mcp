@@ -21,7 +21,7 @@
   },
   "license": "MIT",
   "author": "xixilys",
-  "description": "A self-hosted MCP gateway for cross-client messaging, event wake-ups, Paseo agents, and workspace files and commands across Mac and SSH hosts.",
+  "description": "Connect dot, Grok Bot and GPT chats with shared MCP mailboxes, linked replies and supported event wake-up paths, plus agents and workspace tools.",
   "repository": {
     "type": "git",
     "url": "https://github.com/xixilys/agent-relay-mcp.git"

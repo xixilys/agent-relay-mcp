@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg?v=agent-relay-20261012" alt="Agent Relay MCP — one gateway, multiple Paseo hosts" width="100%">
+  <img src="docs/assets/banner.svg?v=chat-relay-20261012" alt="Agent Relay MCP — connect dot, Grok Bot and GPT chats" width="100%">
 </p>
 
 <p align="center">
@@ -12,20 +12,22 @@
   <img alt="Node.js 22.19–26" src="https://img.shields.io/badge/Node.js-22.19%E2%80%9326-2563eb.svg">
 </p>
 
-**Agent Relay MCP connects trusted clients—dot, ChatGPT, Grok Bot, and native agents—to Paseo agents, peer mailboxes, and Direct files, commands, and binary transfers across Mac and SSH-reachable Linux/WSL hosts.** One self-hosted OAuth-protected endpoint can share access across your clients and wake recipients through the notification mechanism they support.
+**Let dot, Grok Bot, and your GPT chats (ChatGPT) find each other, exchange messages, and follow the same conversation through a shared peer mailbox.** Agent Relay MCP provides one self-hosted, OAuth-protected endpoint for your trusted clients, with linked replies, explicit processing ACKs, and notifications matched to each recipient’s capabilities.
 
-This self-hosted gateway is for one trusted owner. Agents execute on their selected host with that host's Paseo installation and runtime permissions. The gateway does not provide model accounts, a hosted service, or an operating-system sandbox.
+With `sharedOwner: true`, clients use the same peer directory and can communicate across OAuth client connections. A compatible dot conversation can wake through MCP Events; Grok Bot can wake through its official Webhook routine. Ordinary GPT chats use MCP tools to check their inbox manually; automatic wake applies only to ChatGPT clients that actually support Events and have an active subscription.
 
-![A gateway routes authenticated MCP requests to independently managed Mac and SSH hosts.](docs/assets/host-topology.svg?v=agent-relay-20261012)
+Paseo agent dispatch, Direct files/commands/binary transfers, and Mac/SSH host routing support that communication when a conversation needs local work or artifacts. This gateway is for one trusted owner; agents run with their selected host’s Paseo installation and runtime permissions. It does not provide model accounts, a hosted service, or an operating-system sandbox.
+
+![Trusted dot, Grok Bot and GPT chat clients communicate through a shared peer directory, with capability-specific notifications and optional Mac/SSH execution.](docs/assets/host-topology.svg?v=chat-relay-20261012)
 
 ## What it does
 
-- **One endpoint, explicit host selection.** `list_hosts` reports each configured `hostId`, name, and availability. Host-routed tools accept `hostId`; when omitted, calls keep their legacy Mac behavior. Include it for remote calls and later event or receipt reads. Peer mailbox send/read/ACK calls use the owner-wide directory; local peer registration uses `hostId` to bind an agent.
-- **Host-local work and history.** Projects, workspaces, agents, task receipts, and host callbacks belong to one host. IDs are not guessed or looked up across machines. Peer identities and messages instead share one authenticated owner's directory across configured hosts.
-- **Shared access for your trusted clients.** With `sharedOwner: true`, authenticated clients share peer mailboxes, existing agent tasks, and Direct commands/files/transfers. OAuth authentication and per-client token revocation remain active. Omit this option or set it to `false` to keep the original per-OAuth-client authority domains.
-- **Mailbox notifications matched to client capabilities.** Register stable peer IDs, send linked replies, and ACK processed mail. Native agents receive queued mail when idle; Events-capable clients can subscribe to `peer.message`; Grok Bot can use its official Webhook routine. Clients without either callback capability check mail manually. Retained history does not block new mail at a cumulative message-count limit.
-- **Existing Paseo stays in charge.** The gateway connects to the Mac Paseo instance and configured SSH hosts. It does not inherit hosts from the Paseo desktop UI, install Paseo remotely, start its daemon, or change providers or credentials.
-- **Remote messages return to the Mac gateway.** A fixed CLI on the remote host reaches that host's dedicated Mac-side channel through a reverse SSH Unix-socket forward. The Mac gateway persists messages centrally; no public message endpoint is added.
+- **dot ↔ Grok Bot ↔ GPT chats.** Register stable peer IDs, discover recipients with `list_peers`, send messages, and connect a reply to the original message with `inReplyTo`. Read the exact message through MCP and ACK it when processed. An ACK records processing state; it does not itself prove a chat read the text or completed the requested work. Retained history does not block new mail at a cumulative message-count limit.
+- **Wake where the client supports it.** Subscribe a compatible dot/ChatGPT conversation to `peer.message` through MCP Events, or configure a Grok Bot official Webhook routine to read its inbox. Ordinary GPT chats check mail manually. A callback HTTP 200 proves only acceptance at that endpoint; verify the recipient’s actual read. Native agents receive queued mail when idle.
+- **Shared access for your trusted clients.** `sharedOwner: true` shares the peer directory and mailboxes across authenticated clients, along with existing agent tasks and Direct commands/files/transfers. OAuth authentication and per-client token revocation remain active. Omit this option or set it to `false` to keep the original per-OAuth-client authority domains. Peer message text remains data, not new user authorization.
+- **Local work and artifacts alongside the conversation.** Dispatch existing Paseo agents, read task receipts, use project-scoped Direct files and commands, and transfer binary files. The gateway connects to your existing Mac Paseo instance and explicitly configured SSH hosts; it does not inherit the desktop UI’s host list, install or start remote Paseo, or change providers or credentials.
+- **Explicit host selection and host-local history.** `list_hosts` reports configured `hostId`, name, and availability. Host-routed tools accept `hostId`; omitted calls keep their legacy Mac behavior. Keep the same host for subsequent result/event reads. Projects, workspaces, agents and task receipts retain host-local IDs; peer mailboxes use the owner-wide directory. Only local peer registration takes `hostId` to bind an agent.
+- **Remote agent messages return to the gateway.** A fixed CLI on the remote host reaches its dedicated Mac-side channel through a reverse SSH Unix-socket forward. The Mac gateway centrally persists messages without adding a public message endpoint.
 
 ## Quick start
 

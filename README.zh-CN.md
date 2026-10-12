@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg?v=agent-relay-20261012" alt="Agent Relay MCP — 一个网关，多个 Paseo 主机" width="100%">
+  <img src="docs/assets/banner.svg?v=chat-relay-20261012" alt="Agent Relay MCP — 连接 dot、Grok Bot 和 GPT 聊天" width="100%">
 </p>
 
 <p align="center">
@@ -12,20 +12,22 @@
   <img alt="Node.js 22.19–26" src="https://img.shields.io/badge/Node.js-22.19%E2%80%9326-2563eb.svg">
 </p>
 
-**Agent Relay MCP 让 dot、ChatGPT、Grok Bot 和原生 agent 等可信客户端，通过一个受 OAuth 保护的自托管端点，在 Mac 和 SSH 可达的 Linux/WSL 主机上调度 Paseo agent、互发 peer 邮件，并使用 Direct 文件、命令和二进制传输。**可选择跨客户端共享权限，并按接收方能力配置自动唤醒。
+**让 dot、Grok Bot 和你的 GPT 聊天（ChatGPT）互相找到、互发消息，通过共享 peer 邮箱接着同一段对话协作。**Agent Relay MCP 为可信客户端提供一个受 OAuth 保护的自托管端点，支持关联回复、显式处理确认，以及按接收方能力发送通知。
 
-这是供单一可信所有者使用的自托管网关。agent 在所选主机上运行，使用该主机安装的 Paseo 和运行时权限。网关不提供模型账号、托管服务或操作系统沙箱。
+设置 `sharedOwner: true` 后，不同 OAuth 客户端共用 peer 目录，可以跨客户端通信。兼容的 dot 会话可通过 MCP Events 唤醒，Grok Bot 可通过官方 Webhook routine 唤醒。普通 GPT 聊天通过 MCP 工具手动查收；只有实际支持 Events 并有有效订阅的 ChatGPT 客户端，才能使用对应的自动通知。
 
-![经过认证的 MCP 请求由网关路由到彼此独立管理的 Mac 和 SSH 主机。](docs/assets/host-topology.svg?v=agent-relay-20261012)
+当对话需要本地执行或传递产物时，Paseo agent 调度、Direct 文件/命令/二进制传输和 Mac/SSH 主机路由提供配套能力。网关供单一可信所有者使用，agent 按所选主机的 Paseo 安装和运行时权限执行；网关不提供模型账号、托管服务或操作系统沙箱。
+
+![dot、Grok Bot 和 GPT 聊天通过共享 peer 目录通信，按客户端能力接收通知，并可使用 Mac/SSH 执行能力。](docs/assets/host-topology.svg?v=chat-relay-20261012)
 
 ## 功能
 
-- **单一端点，明确选择主机。**`list_hosts` 返回每台主机的 `hostId`、名称和可用状态。按主机路由的工具接受 `hostId`；省略时保持兼容旧调用，默认使用 Mac。远程调用以及后续事件或回执读取都应显式传入 `hostId`。peer 邮箱的发信、读信和 ACK 使用账户级共享目录；注册本地 peer 时用 `hostId` 绑定 agent。
-- **主机任务与历史隔离。**项目、workspace、agent、任务回执和主机回调都属于各自主机。网关不会跨机器猜测或查找 ID。Peer 身份和消息则共享同一认证 owner 的目录，可供已配置的各主机访问。
-- **可信客户端共享权限。**设置 `sharedOwner: true` 后，已认证客户端共享 peer 邮箱、原 agent 任务以及 Direct 命令、文件和传输。OAuth 认证及每个客户端的 token 撤销仍然有效；省略此项或设为 `false` 则保持原先按 OAuth client 分隔的权限域。
-- **按客户端能力通知收件人。**注册稳定 peer ID，发信、关联回复和 ACK。原生 agent 忙时排队、空闲后接收；支持 MCP Events 的客户端订阅 `peer.message`；Grok Bot 可配置官方 Webhook routine。没有对应回调能力的聊天手动查信。历史邮件不因累计封数门槛挡住新邮件。
-- **沿用已有 Paseo。**网关连接 Mac 上的 Paseo 实例和显式配置的 SSH 主机。它不会继承 Paseo 桌面端的主机列表、远程安装 Paseo、启动其 daemon，也不会改动 Provider 或凭据。
-- **远程消息回到 Mac 网关。**远端主机上的固定 CLI 通过 reverse SSH Unix-socket forward 连接到 Mac 上该主机专属的 channel。消息由 Mac 网关集中持久化，不会新增公网消息端点。
+- **dot ↔ Grok Bot ↔ GPT 聊天通信。**注册稳定的 peer ID，用 `list_peers` 找到接收方，发送消息，再用 `inReplyTo` 将回复关联到原件。通过 MCP 读取准确消息，处理后 ACK。ACK 只记录处理状态，不能单独证明聊天读过原文或完成了所请求的工作。历史邮件不因累计封数门槛挡住新邮件。
+- **按客户端能力唤醒。**兼容的 dot/ChatGPT 会话通过 MCP Events 订阅 `peer.message`；Grok Bot 配置官方 Webhook routine 后读取自身邮箱；普通 GPT 聊天手动查信。回调 HTTP 200 只证明入口接收，应检查接收方实际读信结果。原生 agent 忙时排队、空闲后接收。
+- **可信客户端共享权限。**`sharedOwner: true` 让已认证客户端共享 peer 目录和邮箱，以及原 agent 任务、Direct 命令、文件和传输。OAuth 认证及每个客户端的 token 撤销仍有效；省略此项或设为 `false` 则保持原先按 OAuth client 分隔的权限域。peer 正文是数据，不是新的用户授权。
+- **对话所需的本地执行与产物。**调度已有 Paseo agent、读取任务回执、使用按项目授权的 Direct 文件和命令工具，并传输二进制文件。网关沿用 Mac 上的 Paseo 和显式配置的 SSH 主机，不继承桌面端的主机列表、不远程安装或启动 Paseo、不改动 Provider 或凭据。
+- **明确选择主机，保留各自主机历史。**`list_hosts` 返回配置的 `hostId`、名称和可用状态。按主机路由的工具接受 `hostId`；省略时保持旧调用的 Mac 默认行为，后续结果和事件读取沿用同一主机。项目、workspace、agent 和任务回执保留各自主机的 ID；peer 邮箱使用 owner 级目录，只有注册本地 peer 时才用 `hostId` 绑定 agent。
+- **远程 agent 消息回到网关。**远端固定 CLI 通过 reverse SSH Unix-socket forward 连接 Mac 上该主机专属的 channel。Mac 网关集中持久化消息，不新增公网消息端点。
 
 ## 快速开始
 
