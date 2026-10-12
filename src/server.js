@@ -21,6 +21,7 @@ import { createAgentChannel } from './agent-channel.js';
 import { ObserverClient } from './observer-client.js';
 import { createModernHandler, isModernRequest } from './protocol-server.js';
 import { createRequestDiagnostics } from './request-diagnostics.js';
+import { createOAuthDiagnostics } from './oauth-diagnostics.js';
 import { configuredHosts, pinHost } from './hosts.js';
 import { HostRouter } from './host-router.js';
 import { DirectFiles } from './direct-files.js';
@@ -183,10 +184,13 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   provider.onClientRevoked = clientId => ownerPolicy.revokeClient(clientId, owner => gateway.revokeOwner(owner));
   await gateway.refreshTools();
   const app = createMcpExpressApp({ host: '127.0.0.1', allowedHosts: ['127.0.0.1', 'localhost', new URL(config.publicBaseUrl).hostname] });
+  // cloudflared connects over loopback. Stop trusting at any other proxy hop.
+  app.set('trust proxy', 'loopback');
   app.disable('x-powered-by');
   app.route('/direct-files/:token/:filename')
     .get((req, res) => directTransfers.handleDownload(req, res))
     .head((req, res) => directTransfers.handleDownload(req, res));
+  app.use(createOAuthDiagnostics());
   app.use(mcpAuthRouter({ provider, issuerUrl: new URL(config.publicBaseUrl), resourceServerUrl: resource, scopesSupported: [SCOPE], resourceName: 'Local Agents' }));
   app.get('/healthz', (_req, res) => res.json({ ok: true, name: 'local-agents-mcp', version: '0.6.0' }));
   const metadata = getOAuthProtectedResourceMetadataUrl(resource);

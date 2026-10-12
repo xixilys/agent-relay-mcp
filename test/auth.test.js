@@ -52,3 +52,43 @@ test('OAuth PKCE and owner consent, bearer scope and exact resource are enforced
   const resourceDenied = await postForm('/authorize', { ...params, resource: 'https://gateway.example.com/mcp/other', owner_token: ownerToken });
   assert.equal(new URL(resourceDenied.headers.get('location')).searchParams.get('error'), 'invalid_request');
 });
+
+test('loopback proxy trust isolates the SDK token rate limit and stops at public proxy hops', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'local-agents-proxy-test-'));
+  const resource = new URL('https://gateway.example.com/mcp');
+  const provider = new LocalAgentsOAuthProvider({ ownerToken: randomBytes(32).toString('base64url'), scopes: [SCOPE], allowedRedirectHosts: ['chatgpt.com'] }, resource, dir);
+  const tools = JSON.parse(await readFile(new URL('./fixtures/paseo-tools.json', import.meta.url), 'utf8'));
+  const runtime = await createGatewayApp({ stateDir: dir, publicBaseUrl: resource.origin, allowedRoots: [dir] }, {
+    oauthProvider: provider, upstream: { async tools() { return tools; } },
+  });
+  const listener = await new Promise(resolve => { const server = runtime.app.listen(0, '127.0.0.1', () => resolve(server)); });
+  t.after(async () => { await new Promise(resolve => listener.close(resolve)); await runtime.close(); await rm(dir, { recursive: true, force: true }); });
+  const origin = `http://127.0.0.1:${listener.address().port}`;
+  const post = ip => fetch(origin + '/token', {
+    method: 'POST', headers: { 'X-Forwarded-For': ip },
+    body: new URLSearchParams({ client_id: 'unknown-client', grant_type: 'refresh_token', refresh_token: 'not-a-real-token' }),
+  });
+  for (let i = 0; i < 50; i++) {
+    const response = await post(`203.0.113.${i + 1}, 198.51.100.10`);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'invalid_client');
+  }
+  const limited = await post('203.0.113.99, 198.51.100.10');
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).error, 'too_many_requests');
+  const other = await post('198.51.100.11');
+  assert.equal(other.status, 400);
+  assert.equal((await other.json()).error, 'invalid_client');
+
+  const trust = runtime.app.get('trust proxy fn');
+  for (const ip of ['127.0.0.1', '127.0.0.2', '::1', '::ffff:127.0.0.1']) assert.equal(trust(ip), true);
+  for (const ip of ['198.51.100.20', '2001:db8::20', '10.0.0.1', '192.168.1.1', 'fc00::1']) assert.equal(trust(ip), false);
+  // Use Express's actual request IP getter with controlled socket addresses:
+  // a public peer must not gain trust merely by supplying a forwarded header.
+  const request = (remoteAddress, forwarded) => Object.assign(Object.create(runtime.app.request), {
+    socket: { remoteAddress }, headers: { 'x-forwarded-for': forwarded },
+  });
+  assert.equal(request('127.0.0.1', '198.51.100.10').ip, '198.51.100.10');
+  assert.equal(request('198.51.100.20', '198.51.100.10').ip, '198.51.100.20');
+  assert.equal(request('127.0.0.1', '198.51.100.10, 198.51.100.20').ip, '198.51.100.20');
+});

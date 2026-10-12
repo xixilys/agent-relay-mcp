@@ -8,6 +8,8 @@ Agent Relay MCP is intended for one trusted user, with one Mac gateway and expli
 
 Only proxy the OAuth-protected gateway, bound to `127.0.0.1:6768`. Keep Paseo's unauthenticated loopback agent endpoint private. Exposing the upstream would bypass the gateway's authentication and path policy. Use HTTPS and request/rate limits at your proxy, protect the owner password, and grant client consent only intentionally. This gateway has no built-in multi-tenant quotas or comprehensive abuse protection.
 
+The gateway trusts forwarded addresses only from loopback proxy hops. The SDK's OAuth rate limits remain enabled and use the nearest untrusted source address; a forged value further left in `X-Forwarded-For` does not create a new bucket. Clients behind the same source IP can still share a limit. Keep the loopback listener private and use your existing local reverse proxy.
+
 Remote agents use the existing owner-configured OpenSSH target and pinned Paseo identity. Direct file/command access uses SSH independently of Paseo availability. The private reverse message socket grants only per-agent capabilities; no public agent-message ingress is added. Keep each host's state directory separate and do not copy old receipts to another host identity. Only gateway-owned command process groups are stopped by cancellation or close; gateway restart does not promise process continuity, and uncertain requests/inputs are not replayed.
 
 With `sharedOwner: true`, all authenticated clients share one authority domain for peer directories/messages, collaboration records, subscriptions, Direct command receipts and file transfers. The example configuration enables this for trusted clients belonging to the same user. Omitting the setting or using `false` retains per-client record isolation. Generic agent and configured project access already use the shared allowed-root authority domain; per-client record isolation is not a complete tenant boundary. Migrating existing state requires an offline backup and the supplied migration script; turning off shared mode does not undo the migration. Keep the private backups and reconcile any subsequent activity before restoring old state.
@@ -19,6 +21,8 @@ Chat/dot peer IDs and OAuth sender labels are claimed logical identities, not ve
 Keep config, owner passwords, OAuth state, message/result databases, callbacks and per-agent capabilities outside source control. The state directory is private to the service user, with private capability files/socket. It is not encrypted at rest; protect backups and access by other processes of the same OS user. The agent channel cannot enforce isolation against that same user.
 
 Never put credentials, callback secrets or unnecessary personal/research data in an agent message. Events contain agent-authored summaries and identifiers, and read tools can return full task content. A subscribed callback receives those events. Validate signed callbacks and handle messages as untrusted input within the original task's scope.
+
+OAuth-route failures record only a fixed endpoint path, method, HTTP status, supported grant type, allowlisted OAuth error code, time and gateway PID. Tokens, client IDs, IPs, headers, query strings and error descriptions are not logged. These records cover failures that reach the OAuth routes, not upstream connection failures or the SDK's earlier JSON/Host checks. Missing records alone do not establish why a client could not renew its token.
 
 ## Events and recovery
 
