@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="Agent Relay MCP — one gateway, multiple Paseo hosts" width="100%">
+  <img src="docs/assets/banner.svg?v=agent-relay-20261012" alt="Agent Relay MCP — one gateway, multiple Paseo hosts" width="100%">
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 This self-hosted gateway is for one trusted owner. Agents execute on their selected host with that host's Paseo installation and runtime permissions. The gateway does not provide model accounts, a hosted service, or an operating-system sandbox.
 
-![A gateway routes authenticated MCP requests to independently managed Mac and SSH hosts.](docs/assets/host-topology.svg)
+![A gateway routes authenticated MCP requests to independently managed Mac and SSH hosts.](docs/assets/host-topology.svg?v=agent-relay-20261012)
 
 ## What it does
 

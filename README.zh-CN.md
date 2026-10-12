@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="Agent Relay MCP — 一个网关，多个 Paseo 主机" width="100%">
+  <img src="docs/assets/banner.svg?v=agent-relay-20261012" alt="Agent Relay MCP — 一个网关，多个 Paseo 主机" width="100%">
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 这是供单一可信所有者使用的自托管网关。agent 在所选主机上运行，使用该主机安装的 Paseo 和运行时权限。网关不提供模型账号、托管服务或操作系统沙箱。
 
-![经过认证的 MCP 请求由网关路由到彼此独立管理的 Mac 和 SSH 主机。](docs/assets/host-topology.svg)
+![经过认证的 MCP 请求由网关路由到彼此独立管理的 Mac 和 SSH 主机。](docs/assets/host-topology.svg?v=agent-relay-20261012)
 
 ## 功能
 
