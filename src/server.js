@@ -2,6 +2,7 @@ import { readFile, mkdir, chmod } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import express from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -95,7 +96,7 @@ export async function loadConfig(filename = fileURLToPath(new URL('../config.jso
 
 export async function createGatewayApp(config, { upstream = new PaseoUpstream(config.upstreamUrl), oauthProvider,
   callbackClient, observerFactory = options => new ObserverClient(options),
-  hostAdapterFactory = createRemoteHostAdapter, fileDownloadClient, binaryTransportFactory } = {}) {
+  hostAdapterFactory = createRemoteHostAdapter, fileDownloadClient, binaryTransportFactory, onDiagnostic } = {}) {
   const ownerPolicy = createOwnerPolicy(config);
   await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
   await chmod(config.stateDir, 0o700);
@@ -183,10 +184,26 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   const { collaboration, eventStore, delivery } = gateway.default;
   provider.onClientRevoked = clientId => ownerPolicy.revokeClient(clientId, owner => gateway.revokeOwner(owner));
   await gateway.refreshTools();
-  const app = createMcpExpressApp({ host: '127.0.0.1', allowedHosts: ['127.0.0.1', 'localhost', new URL(config.publicBaseUrl).hostname] });
+  const app = express();
   // cloudflared connects over loopback. Stop trusting at any other proxy hop.
   app.set('trust proxy', 'loopback');
   app.disable('x-powered-by');
+  app.all('/mcp', (req, res, next) => {
+    req.mcpObservation = createRequestDiagnostics(req, res, { gateway, write: onDiagnostic });
+    req.mcpObservation.setStage('http_validation');
+    next();
+  });
+  // Keep the SDK's default JSON limits and Host validation unchanged, but
+  // observe requests before either can reject them.
+  const sdkApp = createMcpExpressApp({ host: '127.0.0.1', allowedHosts: ['127.0.0.1', 'localhost', new URL(config.publicBaseUrl).hostname] });
+  sdkApp.set('trust proxy', 'loopback');
+  sdkApp.disable('x-powered-by');
+  app.use(sdkApp);
+  app.use((req, _res, next) => {
+    req.mcpObservation?.identify();
+    req.mcpObservation?.setStage('authentication');
+    next();
+  });
   app.route('/direct-files/:token/:filename')
     .get((req, res) => directTransfers.handleDownload(req, res))
     .head((req, res) => directTransfers.handleDownload(req, res));
@@ -197,17 +214,24 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   const modern = createModernHandler({ gateway, eventService: gateway,
     serverInfo: { name: 'local-agents-mcp', version: '0.6.0' } });
   app.all('/mcp', requireBearerAuth({ verifier: provider, requiredScopes: [SCOPE], resourceMetadataUrl: metadata }), async (req, res) => {
+    const observation = req.mcpObservation ?? createRequestDiagnostics(req, res, { gateway, write: onDiagnostic });
+    observation.setStage('resource');
     // Check the intended resource on every request, not just token issuance.
     if (req.auth?.resource?.href !== resource.href) {
       res.set('WWW-Authenticate', `Bearer error="invalid_token", resource_metadata="${metadata}"`);
       res.status(401).json({ error: 'invalid_token', error_description: 'Token is not valid for this resource' });
       return;
     }
+    observation.setStage('request');
     if (req.method !== 'POST') { res.set('Allow', 'POST').sendStatus(405); return; }
     if (typeof req.auth?.clientId !== 'string' || !req.auth.clientId.length) { res.sendStatus(401); return; }
     req.mcpOwner = ownerPolicy.ownerForClient(req.auth.clientId);
-    if (isModernRequest(req)) { await modern(req, res, req.body); return; }
-    const observation = createRequestDiagnostics(req, res, { gateway });
+    observation.setStage('handler');
+    if (isModernRequest(req)) {
+      observation.setProtocolBranch('modern');
+      await modern(req, res, req.body); return;
+    }
+    observation.setProtocolBranch('legacy');
     const server = new Server({ name: 'local-agents-mcp', version: '0.6.0' }, { capabilities: { tools: {} } });
     server.onerror = error => observation.report('protocol', error);
     server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -215,7 +239,11 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
       catch (error) { observation.report('handler', error); throw error; }
     });
     server.setRequestHandler(CallToolRequestSchema, async request => {
-      try { return await gateway.call(request.params.name, request.params.arguments ?? {}, { owner: req.mcpOwner }); }
+      try {
+        const result = await gateway.call(request.params.name, request.params.arguments ?? {}, { owner: req.mcpOwner });
+        if (result?.isError) observation.report('tool');
+        return result;
+      }
       catch (error) {
         observation.report('tool', error);
         return { isError: true, content: [{ type: 'text', text: typeof error?.message === 'string' ? error.message : 'Tool execution failed' }] };
@@ -232,7 +260,9 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
       await server.close().catch(() => {});
     }
   });
-  app.use((_error, _req, res, _next) => {
+  app.use((error, req, res, _next) => {
+    const parseTypes = ['entity.parse.failed', 'entity.too.large', 'encoding.unsupported', 'charset.unsupported', 'request.size.invalid'];
+    req.mcpObservation?.report(parseTypes.includes(error?.type) ? 'parse' : 'handler', error);
     if (!res.headersSent) res.status(400).json({ error: 'Invalid request' });
   });
   for (const context of contexts) {

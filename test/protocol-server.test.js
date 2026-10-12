@@ -135,9 +135,10 @@ test('a non-Error tool rejection stays one failed tool call instead of becoming 
   assert.equal(response.body.result.isError, true);
   assert.equal(response.body.result.content[0].text, 'Tool execution failed');
   assert.equal(dispatched, 1);
-  assert.equal(records.length, 1);
-  assert.equal(records[0].stage, 'tool');
-  assert.equal(records[0].errorClass, 'NonError');
+  const errors = records.filter(record => record.event === 'mcp_tool_error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].stage, 'tool');
+  assert.equal(errors[0].errorClass, 'NonError');
   assert.equal(response.headers.get('x-local-agents-request-id'), records[0].correlationId);
 });
 
@@ -149,9 +150,10 @@ test('handler failures retain RPC errors and safe diagnostics without logging ca
     headers: { authorization: 'Bearer ' + canary, 'x-local-agents-request-id': canary } });
   assert.equal(response.body.error.code, -32603);
   assert.equal(response.body.id, canary);
-  assert.equal(records.length, 1);
-  assert.equal(records[0].stage, 'handler');
-  assert.equal(records[0].method, 'tools/list');
+  const errors = records.filter(record => record.event === 'mcp_request_error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].stage, 'handler');
+  assert.equal(errors[0].method, 'tools/list');
   assert.equal(response.headers.get('x-local-agents-request-id'), records[0].correlationId);
   assert.ok(!JSON.stringify(records).includes(canary));
 });
@@ -163,8 +165,9 @@ test('adapter conversion errors are observable while preserving HTTP 500 and RPC
   assert.equal(response.status, 500);
   assert.equal(response.body.error.code, -32603);
   assert.equal(response.body.id, 7);
-  assert.equal(records.length, 1);
-  assert.equal(records[0].stage, 'adapter');
+  const errors = records.filter(record => record.event === 'mcp_request_error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].stage, 'adapter');
   assert.equal(response.headers.get('x-local-agents-request-id'), records[0].correlationId);
 });
 
@@ -202,7 +205,8 @@ test('a real client disconnect records one incomplete transport without repeatin
   await transportClosed;
   release();
   assert.equal(dispatched, 1);
-  assert.equal(records.filter(record => record.stage.endsWith('_transport')).length, 1);
+  assert.equal(records.filter(record => record.event === 'mcp_http_incomplete').length, 1);
+  assert.equal(records.filter(record => record.event === 'mcp_request_error' && record.stage.endsWith('_transport')).length, 1);
 });
 
 test('unsupported revision and header/body mismatches fail before gateway dispatch', async t => {

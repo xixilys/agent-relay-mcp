@@ -59,7 +59,11 @@ export function createModernHandler({ gateway, eventService, serverInfo = { name
     server.onerror = error => report('protocol', error);
     server.setRequestHandler('tools/list', observed(async () => ({ tools: await gateway.refreshTools() })));
     server.setRequestHandler('tools/call', async request => {
-      try { return await gateway.call(request.params.name, request.params.arguments ?? {}, { owner: authenticatedOwner(authInfo?.mcpOwner) }); }
+      try {
+        const result = await gateway.call(request.params.name, request.params.arguments ?? {}, { owner: authenticatedOwner(authInfo?.mcpOwner) });
+        if (result?.isError) report('tool');
+        return result;
+      }
       catch (error) {
         report('tool', error);
         return { isError: true, content: [{ type: 'text', text: typeof error?.message === 'string' ? error.message : 'Tool execution failed' }] };
@@ -83,8 +87,10 @@ export function createModernHandler({ gateway, eventService, serverInfo = { name
   const nodeHandler = async (req, res, parsedBody = req.body) => {
     // Each wrapper closes over this request's identity, including concurrent calls.
     // toNodeHandler passes authentication through without reading credential headers.
-    const observation = createRequestDiagnostics({ body: parsedBody === undefined || typeof parsedBody === 'function' ? req.body : parsedBody,
-      once: req.once.bind(req) }, res, { gateway, write: onDiagnostic });
+    const observation = req.mcpObservation ?? createRequestDiagnostics(req, res, { gateway, write: onDiagnostic });
+    observation.setProtocolBranch('modern');
+    observation.identify(parsedBody === undefined || typeof parsedBody === 'function' ? req.body : parsedBody);
+    observation.setStage('handler');
     const adapter = toNodeHandler({ fetch: (request, options) => handler.fetch(request, {
       ...options, authInfo: { ...options?.authInfo, mcpOwner: req.mcpOwner },
     }) }, { onerror: error => observation.report('adapter', error) });

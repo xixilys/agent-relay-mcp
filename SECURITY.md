@@ -24,6 +24,8 @@ Never put credentials, callback secrets or unnecessary personal/research data in
 
 OAuth-route failures record only a fixed endpoint path, method, HTTP status, supported grant type, allowlisted OAuth error code, time and gateway PID. Tokens, client IDs, IPs, headers, query strings and error descriptions are not logged. These records cover failures that reach the OAuth routes, not upstream connection failures or the SDK's earlier JSON/Host checks. Missing records alone do not establish why a client could not renew its token.
 
+For `/mcp`, a separate lifecycle record starts before JSON parsing, Host validation and bearer authentication. It records a generated correlation ID, fixed method/tool names and protocol branch, status, elapsed time, failure stage and allowlisted codes. Each request ends with an origin finish or an incomplete response; a finish does not prove client receipt. Arguments, message content, credentials, client IDs, IPs, headers, queries, raw RPC IDs and exception text are excluded. These records do not cover failures before the request reaches the gateway, and missing records alone do not prove a network cause.
+
 ## Events and recovery
 
 MCP Events callback verification uses a signed challenge. Outbound delivery checks every resolved address, rejects non-public destinations and redirects, pins the checked address for TLS, and bounds time and response size. Subscriptions and replies are associated with the authenticated authority domain and their workspace or peer. Expired/stopped subscriptions cease delivery. Per-client OAuth token revocation remains active in either mode; in shared mode, disconnecting one client does not revoke the other clients' shared resources.
