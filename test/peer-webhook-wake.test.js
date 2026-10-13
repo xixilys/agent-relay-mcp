@@ -29,6 +29,107 @@ async function fixture(t,{ post,ready = true } = {}) {
   return { get service() { return service; },call,posts,target,dir,credentialFile,restart,options };
 }
 
+async function multiFixture(t,{ post,ready = true,secondOwner = 'owner' } = {}) {
+  const f = await fixture(t,{ post,ready: false });
+  const credentialFile = join(f.dir,'computer-wake.json');
+  await writeFile(credentialFile,JSON.stringify({ url: 'https://wake.example/routine/computer',token: 'computer-secret' }),{ mode: 0o600 });
+  const second = { owner: secondOwner,peerId: 'computer',generation: 1,routineId: 'computer',credentialFile };
+  for (const peerId of ['sender','computer']) await f.call('register_peer',{ peerId,kind: 'chat' },secondOwner);
+  f.options.peerWakeTargets.push(second);
+  f.service.webhookWake = new PeerWebhookWake({ store: f.service.store,targets: f.options.peerWakeTargets,
+    callbackClient: f.options.callbackClient,hasMcpCallback: f.service.webhookWake.hasMcpCallback });
+  if (ready) await f.service.ready();
+  return Object.assign(f,{ second });
+}
+
+test('two fixed targets receive only their own minimal message and retain claims and binding history across restart',async t => {
+  const f = await multiFixture(t);
+  const originalBinding = f.service.store.webhookBinding(f.target);
+  const args = [input(),input({ toPeerId: 'computer' })];
+  const messages = args.map(a => f.service.store.putMessage('owner',a,1000,'claimed').message);
+  await Promise.all([drain(f.service),drain(f.service)]);
+  assert.equal(f.posts.length,2);
+  for (const [i,target] of [f.target,f.second].entries()) {
+    const post = f.posts.find(p => JSON.parse(p.body).peerId === target.peerId);
+    assert.equal(post.url,`https://wake.example/routine/${target.routineId}`);
+    assert.equal(post.headers.Authorization,`Bearer ${i === 0 ? 'test-secret' : 'computer-secret'}`);
+    assert.deepEqual(JSON.parse(post.body),{ eventId: messages[i].eventId,messageId: messages[i].messageId,peerId: target.peerId,generation: 1 });
+    assert.equal(post.body.includes('private message text'),false);
+    assert.equal(f.service.store.webhookReceipt('owner',messages[i].messageId).state,'webhook_accepted');
+    assert.equal(f.service.store.getMessage('owner',messages[i].messageId).processedAt,null);
+  }
+  for (const a of args) await f.call('send_peer_message',a);
+  await f.restart(); await drain(f.service);
+  assert.equal(f.posts.length,2);
+  assert.deepEqual(f.service.store.webhookBinding(f.target),originalBinding);
+});
+
+test('admin target list is bounded and rejects duplicate peer generations or owner-scoped routine identities',async t => {
+  const f = await fixture(t);
+  const options = { store: f.service.store,hasMcpCallback: () => false };
+  for (const extra of [{ ...f.target },{ ...f.target,routineId: 'different' },{ ...f.target,peerId: 'different' }]) {
+    assert.throws(() => new PeerWebhookWake({ ...options,targets: [f.target,extra] }),/Duplicate webhook wake/);
+  }
+  const sixteen = Array.from({ length: 16 },(_,i) => ({ ...f.target,peerId: `peer${i}`,routineId: `routine${i}` }));
+  assert.equal(new PeerWebhookWake({ ...options,targets: sixteen }).targets.length,16);
+  assert.throws(() => new PeerWebhookWake({ ...options,targets: [...sixteen,{ ...f.target,peerId: 'peer16',routineId: 'routine16' }] }),/at most 16/);
+});
+
+test('a hanging first wake target does not delay the second and an unknown outcome never retries either target',async t => {
+  let release,started,secondDone;
+  const wait = new Promise(resolve => { release = resolve; });
+  const begun = new Promise(resolve => { started = resolve; });
+  const completed = new Promise(resolve => { secondDone = resolve; });
+  const f = await multiFixture(t,{ post: async (url,req) => {
+    if (url.endsWith('/mcp')) { started(); await Promise.race([wait,new Promise(resolve => req.signal.addEventListener('abort',resolve,{ once: true }))]); throw new Error('lost response'); }
+    secondDone(); return { status: 200 };
+  } });
+  t.after(() => release());
+  const first = f.service.store.putMessage('owner',input(),1000,'claimed').message;
+  const flush = drain(f.service); await begun;
+  // The healthy recipient's new message arrives after the first worker stalls.
+  // A global scan guard would incorrectly hold this notification too.
+  const second = await f.call('send_peer_message',input({ toPeerId: 'computer' }));
+  await Promise.race([completed,new Promise((_,reject) => { const timer = setTimeout(() => reject(Error('second target blocked')),1000); timer.unref(); })]);
+  assert.equal(f.service.store.webhookReceipt('owner',first.messageId).state,'claimed');
+  release(); await flush; await f.restart(); await drain(f.service);
+  assert.equal(f.posts.length,2);
+  assert.equal(f.service.store.webhookReceipt('owner',first.messageId).state,'unknown');
+  assert.equal(f.service.store.webhookReceipt('owner',second.messageId).state,'webhook_accepted');
+});
+
+test('retired second target disables independently while the original binding still sends after restart',async t => {
+  for (const action of ['stopped','generation','revoked']) {
+    const f = await multiFixture(t,{ secondOwner: 'other' });
+    const original = f.service.store.webhookBinding(f.target);
+    const retired = f.service.store.webhookBinding(f.second);
+    if (action === 'revoked') f.service.revokeOwner('other');
+    else {
+      await f.call('unregister_peer',{ peerId: 'computer' },'other');
+      if (action === 'generation') await f.call('register_peer',{ peerId: 'computer',kind: 'chat' },'other');
+    }
+    await rm(f.second.credentialFile); await f.restart();
+    const healthy = f.service.store.putMessage('owner',input(),1000,'claimed').message;
+    await drain(f.service);
+    assert.equal(f.posts.length,1);
+    assert.equal(JSON.parse(f.posts[0].body).messageId,healthy.messageId);
+    assert.deepEqual(f.service.store.webhookBinding(f.target),original);
+    const after = f.service.store.webhookBinding(f.second);
+    assert.equal(after.watermark,retired.watermark); assert.equal(after.created_at,retired.created_at);
+    assert.equal(after.disabled_reason,action === 'revoked' ? 'owner_revoked' : action === 'generation' ? 'generation_changed' : 'peer_stopped');
+  }
+});
+
+test('multi-target configuration cannot change a persisted target routine or endpoint',async t => {
+  const f = await multiFixture(t);
+  const targets = [f.target,{ ...f.second,routineId: 'changed-computer' }];
+  const options = { store: f.service.store,hasMcpCallback: () => false };
+  await assert.rejects(new PeerWebhookWake({ ...options,targets }).ready(),/cannot be rebound/);
+  await writeFile(f.second.credentialFile,JSON.stringify({ url: 'https://wake.example/routine/changed',token: 'computer-secret' }));
+  await assert.rejects(new PeerWebhookWake({ ...options,targets: [f.target,f.second] }).ready(),/cannot be rebound/);
+  assert.equal(f.posts.length,0);
+});
+
 test('fixed minimal payload, recorded MCP event without subscriber, UUID and concurrent scans never duplicate',async t => {
   const f = await fixture(t);
   const args = input();

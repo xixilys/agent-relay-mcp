@@ -30,6 +30,7 @@ import { DirectCommands } from './direct-commands.js';
 import { DirectTransfers } from './direct-transfers.js';
 import { createRemoteHostAdapter } from './host-transport.js';
 import { PeerService } from './peer-service.js';
+import { createClaudeChannel, validateClaudeChannelBinding } from './claude-channel.js';
 import { createPeerNative } from './peer-native.js';
 import { createOwnerPolicy } from './shared-owner.js';
 
@@ -91,6 +92,7 @@ export async function loadConfig(filename = fileURLToPath(new URL('../config.jso
   if (!Array.isArray(config.allowedRoots) || !config.allowedRoots.length || config.allowedRoots.some(root => !isAbsolute(root))) throw new Error('allowedRoots must contain absolute directory paths');
   configuredHosts(config);
   createOwnerPolicy(config);
+  if (config.claudeChannel !== undefined) validateClaudeChannelBinding(config.claudeChannel);
   return config;
 }
 
@@ -114,6 +116,7 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   const contexts = [];
   let directTransfers;
   let peers;
+  let claudeChannel;
   const peerNative = createPeerNative({ contexts, getPeers: () => peers });
   const closeContext = async context => {
     await context.directFiles?.close();
@@ -175,7 +178,12 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
     for (const context of contexts) context.directTransfers = directTransfers.forHost(context.host.id);
     peers = new PeerService({ stateDir: config.stateDir, peerWakeTargets: config.peerWakeTargets, ...peerNative, ...(callbackClient ? { callbackClient } : {}) });
     await peers.ready();
+    if (config.claudeChannel !== undefined) {
+      claudeChannel = createClaudeChannel({ stateDir: config.stateDir,binding: config.claudeChannel,peers });
+      await claudeChannel.listen();
+    }
   } catch (error) {
+    await claudeChannel?.close().catch(() => {});
     await Promise.allSettled([Promise.resolve().then(() => peers?.close()), Promise.resolve().then(() => directTransfers?.close()), ...contexts.map(closeContext)]);
     try { provider.close(); } catch { /* Preserve the original initialization error. */ }
     throw error;
@@ -273,15 +281,18 @@ export async function createGatewayApp(config, { upstream = new PaseoUpstream(co
   }
   let closed;
   peers.start();
-  return { app, gateway, provider, collaboration, eventStore, delivery, directTransfers, peers, hosts: gateway.contexts,
+  return { app, gateway, provider, collaboration, eventStore, delivery, directTransfers, peers, claudeChannel, hosts: gateway.contexts,
     close() {
       if (!closed) closed = (async () => {
         try { await modern.close(); }
         finally {
-          try { await peers.close(); }
+          try { await claudeChannel?.close(); }
           finally {
-            try { await directTransfers.close(); }
-            finally { await Promise.allSettled(contexts.map(closeContext)); provider.close(); }
+            try { await peers.close(); }
+            finally {
+              try { await directTransfers.close(); }
+              finally { await Promise.allSettled(contexts.map(closeContext)); provider.close(); }
+            }
           }
         }
       })();

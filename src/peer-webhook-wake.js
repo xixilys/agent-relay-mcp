@@ -26,7 +26,7 @@ async function credentials(filename) {
  * A lost response cannot prove whether the remote routine started. */
 export class PeerWebhookWake {
   constructor({ store,targets = [],callbackClient = new SafeCallbackClient(),hasMcpCallback,now = Date.now }) {
-    if (!Array.isArray(targets) || targets.length > 1) throw new Error('peerWakeTargets must contain at most one target');
+    if (!Array.isArray(targets) || targets.length > 16) throw new Error('peerWakeTargets must contain at most 16 targets');
     this.targets = targets.map(t => {
       if (!t || typeof t !== 'object' || Array.isArray(t) || Object.keys(t).some(k => !['owner','peerId','generation','routineId','credentialFile'].includes(k)) ||
         typeof t.owner !== 'string' || !t.owner || typeof t.peerId !== 'string' || !PEER_ID_PATTERN.test(t.peerId) ||
@@ -34,8 +34,14 @@ export class PeerWebhookWake {
         typeof t.credentialFile !== 'string' || !isAbsolute(t.credentialFile)) throw new Error('Invalid webhook wake target');
       return { ...t };
     });
+    const peers = new Set(),routines = new Set();
+    for (const t of this.targets) {
+      const peer = JSON.stringify([t.owner,t.peerId,t.generation]),routine = JSON.stringify([t.owner,t.routineId]);
+      if (peers.has(peer) || routines.has(routine)) throw new Error('Duplicate webhook wake peer generation or routine identity');
+      peers.add(peer); routines.add(routine);
+    }
     Object.assign(this,{ store,callbackClient,hasMcpCallback,now });
-    this.active = new Map(); this.closed = false; this.initialized = false; this.flushPromise = null;
+    this.active = new Map(); this.targetFlushes = new Map(); this.closed = false; this.initialized = false; this.flushPromise = null;
   }
   matches(owner,peerId,generation) {
     return this.targets.some(t => t.owner === owner && t.peerId === peerId && t.generation === generation);
@@ -78,37 +84,48 @@ export class PeerWebhookWake {
   }
   flush() {
     if (!this.initialized || this.closed) return Promise.resolve();
-    if (this.flushPromise) return this.flushPromise;
     const action = this.flushBatch(); this.flushPromise = action;
     action.finally(() => { if (this.flushPromise === action) this.flushPromise = null; }).catch(() => {});
     return action;
   }
   async flushBatch() {
-    for (const t of this.targets) {
-      if (!this.eligible(t)) continue;
-      for (const candidate of this.store.webhookCandidates(t)) {
-        if (!this.eligible(t)) break;
-        const m = this.store.claimWebhook(t,candidate.messageId,this.now());
-        if (!m) continue;
-        const controller = new AbortController();
-        this.active.set(m.eventId,{ controller,message: m });
-        let result;
-        try {
-          const response = await this.callbackClient.post(t.credentials.url,{
-            headers: { 'Content-Type': 'application/json',Authorization: `Bearer ${t.credentials.token}` },
-            body: JSON.stringify({ eventId: m.eventId,messageId: m.messageId,peerId: m.toPeerId,generation: m.generation }),
-            maxResponseBytes: 16384,signal: controller.signal,
-          });
-          if (!Number.isInteger(response.status)) throw new Error();
-          result = { state: response.status === 200 ? 'webhook_accepted' : 'failed',status: response.status,
-            reason: response.status === 200 ? null : 'http_error' };
-        } catch (error) {
-          // Never retain errors, URLs, response bodies or credentials. No exception permits retry.
-          const reason = error instanceof CallbackEndpointError && safeReasons.has(error.data?.reason) ? error.data.reason : 'transport_error';
-          result = { state: 'unknown',reason };
-        } finally { this.active.delete(m.eventId); }
-        this.store.finishWebhook(m.owner,m.messageId,result,this.now());
-      }
+    // Each fixed target has one sequential worker. A slow routine must not hold
+    // another peer's wake; the admin target bound also bounds network concurrency.
+    const actions = this.targets.map(t => {
+      const existing = this.targetFlushes.get(t);
+      if (existing) return existing;
+      const action = this.flushTarget(t); this.targetFlushes.set(t,action);
+      action.finally(() => { if (this.targetFlushes.get(t) === action) this.targetFlushes.delete(t); }).catch(() => {});
+      return action;
+    });
+    const results = await Promise.allSettled(actions);
+    const failed = results.find(r => r.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
+  async flushTarget(t) {
+    if (!this.eligible(t)) return;
+    for (const candidate of this.store.webhookCandidates(t)) {
+      if (!this.eligible(t)) break;
+      const m = this.store.claimWebhook(t,candidate.messageId,this.now());
+      if (!m) continue;
+      const controller = new AbortController();
+      this.active.set(m.eventId,{ controller,message: m });
+      let result;
+      try {
+        const response = await this.callbackClient.post(t.credentials.url,{
+          headers: { 'Content-Type': 'application/json',Authorization: `Bearer ${t.credentials.token}` },
+          body: JSON.stringify({ eventId: m.eventId,messageId: m.messageId,peerId: m.toPeerId,generation: m.generation }),
+          maxResponseBytes: 16384,signal: controller.signal,
+        });
+        if (!Number.isInteger(response.status)) throw new Error();
+        result = { state: response.status === 200 ? 'webhook_accepted' : 'failed',status: response.status,
+          reason: response.status === 200 ? null : 'http_error' };
+      } catch (error) {
+        // Never retain errors, URLs, response bodies or credentials. No exception permits retry.
+        const reason = error instanceof CallbackEndpointError && safeReasons.has(error.data?.reason) ? error.data.reason : 'transport_error';
+        result = { state: 'unknown',reason };
+      } finally { this.active.delete(m.eventId); }
+      this.store.finishWebhook(m.owner,m.messageId,result,this.now());
     }
   }
   cancelInvalid() {
@@ -121,6 +138,6 @@ export class PeerWebhookWake {
   async close() {
     this.closed = true;
     for (const { controller } of this.active.values()) controller.abort();
-    if (this.flushPromise) await this.flushPromise.catch(() => {});
+    await Promise.allSettled([...this.targetFlushes.values()]);
   }
 }

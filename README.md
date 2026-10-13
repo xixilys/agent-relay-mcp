@@ -127,11 +127,44 @@ Backups contain private state and must remain outside Git. If migration fails, k
 | Native Paseo agent | Register `kind: "local"` with its existing owned `hostId` and `agentId`. | Busy mail queues until idle; inspect the original message and actual agent result. |
 | MCP Events client, including a compatible dot conversation | Register a peer, then call `events/subscribe` in that recipient conversation for `peer.message`, with `arguments: {"peerId":"dot","generation":1}` using its actual ID/generation and the platform-provided callback/signing secret. | Keep unrelated `agent.attention` subscriptions. Confirm the recipient reads the original mail without another user prompt. |
 | Grok Bot with an official Webhook routine | Register its peer, create the routine in Grok Bot, and configure the private target below. | The routine uses its own existing MCP connection to list/read its inbox; an HTTP 200 alone does not prove it ran or read the message. |
+| Claude Code with native Channels | Configure the private fixed binding below and launch the stdio adapter from an interactive Claude session. | Confirm native channel admission, exact read, linked reply and explicit ACK; notification writes alone are insufficient. |
 | Client with no supported callback | Register a peer and call `list_peer_messages`/`get_peer_message`. | Manual reads remain available; registration alone cannot wake a chat. |
 
 MCP Events subscriptions expire: one day by default, or seven days with `ttlMs: null`. Maintain renewal before `expiresAt`; preserve unrelated routes and subscription IDs. The MCP callback path uses verified challenges and Standard Webhooks signatures with bounded retries. The separate official Webhook path below uses a bearer token and one durable attempt per new message, without an MCP challenge or automatic retry.
 
-For Grok Bot, add this fragment to the **private** `config.json` only after the exact peer/generation is active. The current adapter supports at most one target, and that peer must have no active MCP Events callback:
+#### Private Claude Code channel
+
+Opt in only after registering the intended Claude peer as `kind: "chat"`. Set its actual owner, peer ID and current generation in the private gateway configuration:
+
+```json
+{"claudeChannel":{"owner":"local-owner:shared","peerId":"claude","generation":1}}
+```
+
+Malformed bindings fail gateway startup. A valid-shaped binding whose peer is missing, stopped, revoked or at a different generation leaves the private channel unavailable and rejects requests with HTTP 403; unrelated gateway clients continue. The gateway never registers or rebinds that peer automatically. It creates `claude-channel.sock` with mode `0600` in its private `0700` state directory; one active stdio consumer is allowed. The adapter uses only that Unix socket, with no public endpoint or OAuth credential. The boundary is the trusted OS user, not authenticated remote Claude identity: peer sender assurance stays `claimed`. Its session UUID fences disconnected adapters and is not a bearer credential. Stopping the peer, changing its generation, revoking its owner or shutting down closes the stream and prevents further adapter tools.
+
+Configure a Claude stdio MCP server named `peer-channel` that launches the adapter with an absolute Node path and socket path. For an already authorized SSH connection to the gateway Mac, the command is `ssh`, with arguments equivalent to:
+
+```text
+mac /opt/homebrew/bin/node /absolute/gateway/bin/claude-channel.mjs --socket /absolute/private/state/claude-channel.sock
+```
+
+Use the real SSH alias and paths. In the Channels research preview, start an interactive Claude session with `--dangerously-load-development-channels server:peer-channel` and complete its local confirmation. Account/organization policy and native channel admission still apply; `-p` and Agent SDK sessions ignore this development flag. This channel does not relay permission approvals. See the [official Channels reference](https://code.claude.com/docs/en/channels-reference).
+
+For a remote Claude host that needs to recover after SSH disconnects, keep the stdio adapter on that host. Install the pinned `@modelcontextprotocol/sdk@1.29.0` dependency beside both `bin/claude-channel.mjs` and `bin/claude-channel-ssh.mjs`, and configure `peer-channel` to run the host's absolute Node executable with:
+
+```text
+/absolute/client/bin/claude-channel-ssh.mjs --ssh-alias mac --remote-socket /absolute/gateway/state/claude-channel.sock --state-dir /absolute/private/channel-state
+```
+
+The state directory must already exist, belong to the current OS user and have mode `0700`, with no symlink ancestors. Keep its path short enough for the generated Unix socket to fit within 100 bytes. The launcher creates one private temporary directory and `0600` Unix socket, then forwards it over its own SSH connection to the existing gateway socket. The alias must already authenticate with a verified known host key. Connection sharing is disabled for this invocation; strict host-key checking is enabled. No public port, OAuth token or new SSH identity is introduced.
+
+Transient SSH failures reconnect with bounded backoff while Claude keeps the same initialized stdio process. Gateway stream loss also reconnects. Authentication, host-key, unsafe-path, inactive-binding and conflicting-consumer failures stop recovery; they do not change access or evict another consumer. Shutdown stops only the owned SSH child and removes only recognized temporary resources. Tool writes are never retried automatically. A missing startup socket remains recoverable, but `tools/list` has an eight-second wait budget; native Claude admission during a longer initial outage needs separate validation. The launcher does not start Claude, wake a sleeping VM or manage other services.
+
+Pushes contain message metadata and an instruction to read the exact original ID. The adapter exposes only `get_peer_message`, `list_peer_messages`, `send_peer_message` and `ack_peer_message`, scoped to its fixed current-generation inbox/outbox and sender/recipient identity. `list_peer_messages` additionally accepts `direction: "outbox"` for recovering a reply after an uncertain send. Keep the original UUID, preserve `inReplyTo`, and inspect the outbox before attempting another reply. The existing one-reply and eight-hop limits still apply. Reads, pushes and notification writes never ACK, prove task completion or grant human authorization.
+
+Reconnect replays durable unprocessed messages with their original IDs, excluding cancelled messages and inactive sender generations. The adapter deduplicates notifications within its process; restarting it replays messages still unacknowledged. ACK events retire notification IDs, and completed replay removes ACKs missed while disconnected. Buffers and connection timeouts are bounded. A process that reaches 10,000 outstanding notification IDs stops with a diagnostic and requires backlog processing and restart; slow consumers disconnect for replay rather than silently dropping messages. Live messages may arrive during backlog replay. Keep a persistent interactive Claude session for unattended delivery and verify actual model reading/replies separately from transport tests.
+
+For Grok Bot, add this fragment to the **private** `config.json` only after the exact peer/generation is active. The adapter supports up to 16 fixed targets, each with a distinct owner/peer/generation and owner/routine identity. Each peer must have no active MCP Events callback; a private Claude Channels consumer may coexist with a wake target. Targets deliver independently, preserving each binding and its one durable attempt per message. Previously bound stopped, revoked or stale targets disable on restart without blocking healthy targets; a newly configured invalid target still fails initialization.
 
 ```json
 {

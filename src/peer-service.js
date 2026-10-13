@@ -46,9 +46,19 @@ export class PeerService {
       hasMcpCallback: t => this.eventStore.activeSubscriptions({ owner: t.owner,name: PEER_EVENT,now: this.now() })
         .some(s => s.arguments.peerId === t.peerId && s.arguments.generation === t.generation) });
     this.scanRowId = 0;
+    this.channelListeners = new Set();
     this.peerLocks = new Map(); this.peerRevisions = new Map(); this.ownerRevisions = new Map(); this.flushPromise = null; this.timer = null; this.started = false; this.closed = false;
   }
   tools() { return structuredClone(PEER_TOOLS); }
+  subscribeChannel(listener) {
+    if (this.closed || typeof listener !== 'function') throw new Error('Peer service is closed or listener is invalid');
+    this.channelListeners.add(listener);
+    return () => this.channelListeners.delete(listener);
+  }
+  notifyChannels(event) {
+    // A private consumer failure must never change durable mailbox acceptance.
+    for (const listener of this.channelListeners) { try { listener(event); } catch { /* Consumer owns its recovery. */ } }
+  }
   list(owner) { own(owner); return { events: [structuredClone(definition)] }; }
   nativePeer(owner,hostId,agentId) {
     own(owner);
@@ -132,11 +142,13 @@ export class PeerService {
       if (p?.subscriptionId) this.delivery.stopSubscription(p.subscriptionId,owner,'peer_unregistered');
       this.cancelUndeliverableEvents(owner);
       this.webhookWake.cancelInvalid();
+      this.notifyChannels({ type: 'invalidated',owner });
       return { status: 'unregistered',peer: this.publicPeer(p) ?? null };
     }
     if (name === 'send_peer_message') {
       this.assertActor(owner,actor,args.fromPeerId);
       const r = this.store.putMessage(owner,args,this.now(),actor ? 'native_capability' : 'claimed');
+      if (!r.duplicate) this.notifyChannels({ type: 'message',message: r.message });
       if (!r.duplicate) queueMicrotask(() => {
         if (this.closed) return;
         // Storage acceptance must not wait for a host RPC or a batch of wakes.
@@ -161,7 +173,9 @@ export class PeerService {
       return this.receipt(m);
     }
     this.assertActor(owner,actor,args.peerId);
-    return this.receipt(this.store.ack(owner,args.messageId,args.peerId,this.now()));
+    const acknowledged = this.store.ack(owner,args.messageId,args.peerId,this.now());
+    this.notifyChannels({ type: 'ack',message: acknowledged });
+    return this.receipt(acknowledged);
   }
   actorCanRead(owner,actor,m) {
     const p = this.store.getPeer(owner,actor.peerId);
@@ -221,7 +235,7 @@ export class PeerService {
       }
     }
   }
-  revokeOwner(owner) { own(owner); this.ownerRevisions.set(owner,(this.ownerRevisions.get(owner) ?? 0)+1); this.store.revokeOwner(owner,this.now()); this.delivery.revokeOwner(owner); this.cancelUndeliverableEvents(owner); this.webhookWake.cancelInvalid(); }
+  revokeOwner(owner) { own(owner); this.ownerRevisions.set(owner,(this.ownerRevisions.get(owner) ?? 0)+1); this.store.revokeOwner(owner,this.now()); this.delivery.revokeOwner(owner); this.cancelUndeliverableEvents(owner); this.webhookWake.cancelInvalid(); this.notifyChannels({ type: 'invalidated',owner }); }
   async flushPending() {
     // Webhook latency must never hold the original mailbox/native scan guard.
     if (!this.closed && this.webhookWake.targets.length) {
@@ -294,6 +308,7 @@ export class PeerService {
   }
   async close() {
     if (this.closed) return; this.closed = true; this.started = false; clearTimeout(this.timer); this.timer = null;
+    this.notifyChannels({ type: 'closed' }); this.channelListeners.clear();
     await Promise.allSettled([this.webhookWake.close(),this.delivery.stop(),this.flushPromise]);
     this.eventStore.close(); this.store.close();
   }
